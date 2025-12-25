@@ -1,56 +1,13 @@
-/* 
-  AMAN-OS (full) - Single-button 16x2 I2C LCD OS for Arduino Nano (ATmega328P)
-  - 6 games: Runner, Snake, Reaction, Pong, Memory, Flappy
-  - Highscores, gamesPlayed, totalPlayTime saved in EEPROM
-  - Difficulty per game saved in EEPROM
-  - Splash screen, settings, high-score screen, pause menu
-  - Buffered LCD renderer (diff updates)
-  - Non-blocking main loop with 40 FPS frame limiter
-  Single button: D2 -> to GND
-  LCD: LiquidCrystal_I2C at 0x27,16,2
-*/
-
-#include <LiquidCrystal_I2C.h>
+  #include "LiquidCrystal_I2C.h"
 #include <EEPROM.h>
-
-// ---------- HARDWARE CONFIG ----------
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_I2C lcd(0x27,16,2);
 
 #define PIN_BUTTON 2
-// Optional buzzer: add pin and implement tone() calls if you later want sound
-#define BUZZER_PIN 255 // 255 -> disabled
-
-// Battery (disabled by default - user didn't provide pin)
-#define BATTERY_ENABLED false
-#define BATTERY_PIN A0
-
-// ---------- TIMING / FRAME LIMITER ----------
-const uint8_t FPS = 40;               // 40 FPS as requested
-const uint16_t FRAME_TIME = 1000 / FPS;
-unsigned long lastFrame = 0;
-bool frameReady() {
-  unsigned long now = millis();
-  if (now - lastFrame >= FRAME_TIME) {
-    lastFrame = now;
-    return true;
-  }
-  return false;
-}
-
-// ---------- BUTTON (single-button semantics) ----------
 #define HOLD_TIME 1500
 #define PAUSE_HOLD_TIME 2000
-#define CLICK_COOLDOWN 400
+#define CLICK_COOLDOWN 500
 
-// buttonAction meanings:
-// 0 = none, 1 = click, 2 = hold (select/confirm)
-static byte buttonAction = 0;
-static bool btnWasPressed = false;
-static unsigned long btnDownTime = 0;
-static unsigned long lastClickTime = 0;
-static bool holdingForPause = false;
-
-// ---------- STATES ----------
+// States
 #define STATE_BOOT 0
 #define STATE_IDLE 1
 #define STATE_MAIN_MENU 2
@@ -69,142 +26,78 @@ static bool holdingForPause = false;
 #define STATE_STATS 15
 #define STATE_PAUSED 16
 
-static byte gameState = STATE_BOOT;
-static byte previousGame = STATE_RUNNER;
-
-// ---------- GAMES / UI CONSTANTS ----------
 #define TERRAIN_WIDTH 16
 #define HERO_HORIZONTAL_POSITION 1
+
+static byte gameState = STATE_BOOT;
+static byte previousGame = STATE_RUNNER;
+static byte mainMenuSelection = 0;
+static byte gamesMenuSelection = 0;
+static byte pauseSelection = 0;
+static unsigned int highScores[6] = {0, 0, 0, 0, 0, 0};
+static unsigned long totalPlayTime[6] = {0, 0, 0, 0, 0, 0};
+static unsigned int gamesPlayed[6] = {0, 0, 0, 0, 0, 0};
+
+static byte buttonAction = 0;
+static unsigned long btnDownTime = 0;
+static unsigned long lastClickTime = 0;
+static bool btnWasPressed = false;
+static bool holdingForPause = false;
+static bool gameIsActive = false;
+
+static char terrainUpper[TERRAIN_WIDTH + 1];
+static char terrainLower[TERRAIN_WIDTH + 1];
+static byte snakeX[32], snakeY[32];
+static byte snakeLen, foodX, foodY, snakeDir;
+
+// Settings
+static byte difficulty = 1; // 0=Easy, 1=Normal, 2=Hard
+static bool soundEnabled = true;
+static unsigned long idleTimeout = 60000; // 60 seconds
 
 const char* mainMenuItems[] = {"Games", "Stopwatch", "Calculator", "Dice", "Stats", "Settings"};
 const char* gameNames[] = {"Runner", "Snake", "Reaction", "Pong", "Memory", "Flappy"};
 
-// ---------- EEPROM STORAGE LAYOUT ----------
-/*
-0..11   : highScores[0..5]   (2 bytes each)  -> 12 bytes
-12..17  : gamesPlayed[0..5]  (1 byte each)  -> 6 bytes
-18..29  : totalPlayTime[0..5] (2 bytes each) -> 12 bytes (seconds)
-30..35  : difficulty[0..5]    (1 byte each)  -> 6 bytes
-36.. : reserved
-*/
-const int EEPROM_ADDR_HIGHSCORES = 0;
-const int EEPROM_ADDR_GAMESPLAYED = 12;
-const int EEPROM_ADDR_TOTALPLAYTIME = 18;
-const int EEPROM_ADDR_DIFFICULTY = 30;
+// Sprites
+byte ippo[8] = {B00110,B00110,B00000,B00111,B00110,B00110,B00110,B01001};
+byte ippoJab[8] = {B00110,B00110,B00000,B00111,B00111,B00110,B00110,B01001};
+byte ippoDuck[8] = {B00000,B00110,B00110,B00111,B00110,B00110,B01001,B00000};
+byte miyata[8] = {B01100,B01100,B00000,B11100,B01100,B01100,B01100,B10010};
+byte miyataJab[8] = {B01100,B01100,B00000,B11100,B11100,B01100,B01100,B10010};
+byte miyataDuck[8] = {B00000,B01100,B01100,B11100,B01100,B01100,B10010,B00000};
+byte spark[8] = {B00000,B00100,B01110,B00100,B00000,B00000,B00000,B00000};
 
-// ---------- STATS ----------
-static uint16_t highScores[6];
-static uint16_t totalPlayTime[6]; // seconds (2 bytes each)
-static uint8_t gamesPlayed[6];
-static uint8_t difficultyPerGame[6]; // 0=Easy,1=Normal,2=Hard
+byte heroRun1[8] = {B00000,B01110,B01101,B00110,B11110,B01110,B10010,B00000};
+byte heroRun2[8] = {B00000,B01110,B01101,B00110,B11110,B01110,B01100,B00000};
+byte heroJump[8] = {B00000,B01110,B01101,B11110,B00010,B01110,B00000,B00000};
+byte coin[8] = {B00000,B01110,B11011,B11111,B11111,B11011,B01110,B00000};
+byte blockFull[8] = {B11111,B11111,B11111,B11111,B11111,B11111,B11111,B11111};
+byte blockRight[8] = {B00011,B00011,B00011,B00011,B00011,B00011,B00011,B00011};
+byte blockLeft[8] = {B11000,B11000,B11000,B11000,B11000,B11000,B11000,B11000};
 
-// ---------- Global game vars ----------
-static bool gameIsActive = false;
-static unsigned long gameStartTime = 0;
+void loadHighScores() {
+  for (int i = 0; i < 6; i++) {
+    highScores[i] = EEPROM.read(i * 2) | (EEPROM.read(i * 2 + 1) << 8);
+    if (highScores[i] > 9999) highScores[i] = 0;
+  }
+  difficulty = EEPROM.read(20);
+  if (difficulty > 2) difficulty = 1;
+}
 
-// Buffered LCD renderer (stores last written chars)
-char lcdBuf[2][17]; // last frame, plus terminating \0
-
-void lcdInitBuffer() {
-  for (int r = 0; r < 2; ++r) {
-    for (int c = 0; c < 16; ++c) lcdBuf[r][c] = '\xff'; // sentinel different from ' '
-    lcdBuf[r][16] = '\0';
+void saveHighScore(byte game, unsigned int score) {
+  bool isBetter = (game == 2) ? (score < highScores[game] || highScores[game] == 0) : (score > highScores[game]);
+  if (isBetter) {
+    highScores[game] = score;
+    EEPROM.write(game * 2, score & 0xFF);
+    EEPROM.write(game * 2 + 1, (score >> 8) & 0xFF);
   }
 }
 
-void lcdWriteBuffered(int col, int row, const char* text) {
-  // writes text starting at col,row but only updates changed chars
-  for (int i = 0; text[i] && col + i < 16; ++i) {
-    char ch = text[i];
-    if (lcdBuf[row][col + i] != ch) {
-      lcd.setCursor(col + i, row);
-      lcd.print(ch);
-      lcdBuf[row][col + i] = ch;
-    }
-  }
-}
-
-// Overload to write single char
-void lcdWriteBufferedChar(int col, int row, char ch) {
-  if (col < 0 || col >= 16 || row < 0 || row >= 2) return;
-  if (lcdBuf[row][col] != ch) {
-    lcd.setCursor(col, row);
-    lcd.print(ch);
-    lcdBuf[row][col] = ch;
-  }
-}
-
-void lcdClearBuffered() {
-  for (int r = 0; r < 2; ++r) for (int c = 0; c < 16; ++c) lcdBuf[r][c] = '\0';
-  lcd.clear();
-}
-
-// ---------- EEPROM helpers ----------
-void loadStatsFromEEPROM() {
-  int addr = EEPROM_ADDR_HIGHSCORES;
-  for (int i = 0; i < 6; ++i) {
-    uint16_t v = 0;
-    v = EEPROM.read(addr) | (EEPROM.read(addr + 1) << 8);
-    highScores[i] = v;
-    addr += 2;
-  }
-  addr = EEPROM_ADDR_GAMESPLAYED;
-  for (int i = 0; i < 6; ++i) gamesPlayed[i] = EEPROM.read(addr++);
-
-  addr = EEPROM_ADDR_TOTALPLAYTIME;
-  for (int i = 0; i < 6; ++i) {
-    uint16_t v = EEPROM.read(addr) | (EEPROM.read(addr + 1) << 8);
-    totalPlayTime[i] = v;
-    addr += 2;
-  }
-
-  addr = EEPROM_ADDR_DIFFICULTY;
-  for (int i = 0; i < 6; ++i) {
-    uint8_t d = EEPROM.read(addr++);
-    if (d > 2) d = 1;
-    difficultyPerGame[i] = d;
-  }
-}
-
-void saveHighScoreToEEPROM(byte game) {
-  int addr = EEPROM_ADDR_HIGHSCORES + game * 2;
-  uint16_t v = highScores[game];
-  EEPROM.update(addr, v & 0xFF);
-  EEPROM.update(addr + 1, (v >> 8) & 0xFF);
-}
-
-void saveGamesPlayedToEEPROM(byte game) {
-  int addr = EEPROM_ADDR_GAMESPLAYED + game;
-  EEPROM.update(addr, gamesPlayed[game]);
-}
-
-void saveTotalPlayTimeToEEPROM(byte game) {
-  int addr = EEPROM_ADDR_TOTALPLAYTIME + game * 2;
-  uint16_t v = totalPlayTime[game];
-  EEPROM.update(addr, v & 0xFF);
-  EEPROM.update(addr + 1, (v >> 8) & 0xFF);
-}
-
-void saveDifficultyToEEPROM(byte game) {
-  int addr = EEPROM_ADDR_DIFFICULTY + game;
-  EEPROM.update(addr, difficultyPerGame[game]);
-}
-
-void saveAllStats() {
-  for (byte i = 0; i < 6; ++i) {
-    saveHighScoreToEEPROM(i);
-    saveGamesPlayedToEEPROM(i);
-    saveTotalPlayTimeToEEPROM(i);
-    saveDifficultyToEEPROM(i);
-  }
-}
-
-// ---------- Button update (non-blocking; sets buttonAction) ----------
 void updateButton() {
   buttonAction = 0;
   bool pressed = (digitalRead(PIN_BUTTON) == LOW);
   unsigned long now = millis();
-
+  
   if (pressed && !btnWasPressed) {
     btnDownTime = now;
     btnWasPressed = true;
@@ -217,202 +110,283 @@ void updateButton() {
         holdingForPause = true;
         previousGame = gameState;
         gameState = STATE_PAUSED;
-        // show pause menu immediately
-        lcdClearBuffered();
-        lcd.setCursor(3, 0); lcd.print("PAUSED");
-        lcd.setCursor(0, 1); lcd.print(">Resume   Quit");
+        pauseSelection = 0;
+        lcd.clear();
+        lcd.setCursor(3, 0);
+        lcd.print("PAUSED");
+        lcd.setCursor(0, 1);
+        lcd.print(">Resume   Quit");
       }
-      btnWasPressed = false; // consume
+      btnWasPressed = false;
     }
     else if (held >= HOLD_TIME && !gameIsActive && gameState != STATE_PAUSED) {
-      // long hold in menus = select
       buttonAction = 2;
       btnWasPressed = false;
+    }
+    else if ((gameState == STATE_MAIN_MENU || gameState == STATE_GAMES_MENU) && held < HOLD_TIME && held > 200) {
+      // Show progress bar in menus
+      int progress = (held * 12) / HOLD_TIME;
+      lcd.setCursor(0, 1);
+      for (int i = 0; i < 12; i++) {
+        lcd.print(i < progress ? "\xFF" : " ");
+      }
+      float remaining = (HOLD_TIME - held) / 1000.0;
+      lcd.setCursor(12, 1);
+      lcd.print(remaining, 1);
+      lcd.print("s");
     }
   }
   else if (!pressed && btnWasPressed) {
     btnWasPressed = false;
     holdingForPause = false;
+    // Redraw menu line after releasing hold
+    if (gameState == STATE_MAIN_MENU) {
+      lcd.setCursor(0, 1);
+      lcd.print("Press to select ");
+    } else if (gameState == STATE_GAMES_MENU) {
+      lcd.setCursor(0, 1);
+      lcd.print("Hi:");
+      lcd.print(highScores[gamesMenuSelection]);
+      lcd.print("         ");
+    }
     unsigned long held = now - btnDownTime;
     if (held < HOLD_TIME && now - lastClickTime > CLICK_COOLDOWN) {
-      buttonAction = 1; // click
+      buttonAction = 1;
       lastClickTime = now;
     }
   }
 }
 
-// ---------- Splash / Boot (non-blocking-ish - short blocking animations okay) ----------
 void slotMachineBoot() {
-  // short blocking animation - one-time at boot
-  lcd.clear();
-  lcd.setCursor(4, 0);
-  lcd.print("AMAN OS");
-  delay(600);
-
-  // slot-like reveal
   const char* target = "AMAN OS";
   char display[8] = "       ";
-  for (int i = 0; i < 7; ++i) {
-    if (target[i] == ' ') { display[i] = ' '; continue; }
-    for (int spin = 0; spin < 10; ++spin) {
-      display[i] = 'A' + random(26);
-      lcd.clear();
-      lcd.setCursor(4, 0);
-      lcd.print(display);
-      delay(30 + spin * 6);
-    }
-    display[i] = target[i];
-    lcd.clear();
-    lcd.setCursor(4, 0);
-    lcd.print(display);
-    delay(120);
-  }
-  // blink backlight if supported by library (no-op otherwise)
-  for (int k = 0; k < 2; ++k) {
-    // many LiquidCrystal_I2C implementations have noBacklight/backlight
-    // We try, but guard with no side effects if not present.
-#ifdef LiquidCrystal_I2C_h
-    // nothing portable; keep short pause
-#endif
-    delay(80);
-  }
-
   lcd.clear();
   lcd.setCursor(4, 0);
-  lcd.print("Ready!");
-  delay(300);
+  lcd.print("WELCOME!");
+  delay(800);
   lcd.clear();
+  
+  for (int i = 0; i < 7; i++) {
+    if (target[i] == ' ') { display[i] = ' '; continue; }
+    for (int spin = 0; spin < 15; spin++) {
+      display[i] = 'A' + random(26);
+      lcd.setCursor(4, 0);
+      lcd.print(display);
+      delay(50 + spin * 10);
+    }
+    display[i] = target[i];
+    lcd.setCursor(4, 0);
+    lcd.print(display);
+    delay(200);
+  }
+  
+  for (int i = 0; i < 3; i++) {
+    lcd.noBacklight(); delay(100);
+    lcd.backlight(); delay(100);
+  }
+  
+  lcd.setCursor(2, 1);
+  lcd.print("Loading...");
+  delay(800);
+  lcd.clear();
+  gameState = STATE_IDLE;
 }
 
-// ---------- Idle animations ----------
-static unsigned long idleLastActivity = 0;
-void drawIdle() {
-  static bool initialized = false;
-  static bool blinkState = false;
-  static unsigned long lastBlink = 0;
+void playIdleFight(bool corner) {
+  static unsigned long lastAnim = 0;
+  static byte frame = 0;
+  if (millis() - lastAnim < 500) return;
+  lastAnim = millis();
+  
+  lcd.createChar(1, ippo);
+  lcd.createChar(2, miyata);
+  lcd.createChar(3, spark);
+  lcd.createChar(4, ippoJab);
+  lcd.createChar(5, miyataJab);
+  lcd.createChar(6, ippoDuck);
+  lcd.createChar(7, miyataDuck);
+  
+  if (corner) {
+    lcd.setCursor(13, 1);
+    lcd.print("   ");
+    switch(frame) {
+      case 0: case 4:
+        lcd.setCursor(13, 1); lcd.write(1);
+        lcd.setCursor(15, 1); lcd.write(2);
+        break;
+      case 1: case 2:
+        lcd.setCursor(13, 1); lcd.write(4);
+        lcd.setCursor(14, 1); lcd.write(3);
+        lcd.setCursor(15, 1); lcd.write(2);
+        break;
+      case 3:
+        lcd.setCursor(13, 1); lcd.write(4);
+        lcd.setCursor(15, 1); lcd.write(7);
+        break;
+      case 5: case 6:
+        lcd.setCursor(13, 1); lcd.write(1);
+        lcd.setCursor(14, 1); lcd.write(3);
+        lcd.setCursor(15, 1); lcd.write(5);
+        break;
+      case 7:
+        lcd.setCursor(13, 1); lcd.write(6);
+        lcd.setCursor(15, 1); lcd.write(5);
+        break;
+    }
+  } else {
+    lcd.setCursor(4, 1);
+    lcd.print("        ");
+    switch(frame) {
+      case 0: case 4:
+        lcd.setCursor(5, 1); lcd.write(1);
+        lcd.setCursor(10, 1); lcd.write(2);
+        break;
+      case 1:
+        lcd.setCursor(6, 1); lcd.write(1);
+        lcd.setCursor(10, 1); lcd.write(2);
+        break;
+      case 2:
+        lcd.setCursor(6, 1); lcd.write(4);
+        lcd.setCursor(7, 1); lcd.write(3);
+        lcd.setCursor(10, 1); lcd.write(2);
+        break;
+      case 3:
+        lcd.setCursor(6, 1); lcd.write(4);
+        lcd.setCursor(10, 1); lcd.write(7);
+        break;
+      case 5:
+        lcd.setCursor(5, 1); lcd.write(1);
+        lcd.setCursor(9, 1); lcd.write(2);
+        break;
+      case 6:
+        lcd.setCursor(5, 1); lcd.write(1);
+        lcd.setCursor(8, 1); lcd.write(3);
+        lcd.setCursor(9, 1); lcd.write(5);
+        break;
+      case 7:
+        lcd.setCursor(5, 1); lcd.write(6);
+        lcd.setCursor(9, 1); lcd.write(5);
+        break;
+    }
+  }
+  frame = (frame + 1) % 8;
+}
 
-  if (!initialized) {
-    lcdClearBuffered();
+void updateIdle() {
+  static bool init = false;
+  static unsigned long lastActivity = 0;
+  
+  if (!init) {
+    lcd.clear();
     lcd.setCursor(4, 0);
     lcd.print("AMAN OS");
-    initialized = true;
-    idleLastActivity = millis();
+    init = true;
+    lastActivity = millis();
   }
-
-  if (millis() - lastBlink > 500) {
-    blinkState = !blinkState;
-    lastBlink = millis();
-    // small fight in corner
-    lcdWriteBuffered(13, 1, blinkState ? "><" : "  ");
-  }
-
-  // If any button action comes, go to menu
+  
+  playIdleFight(false);
+  
   if (buttonAction == 1 || buttonAction == 2) {
-    initialized = false;
-    idleLastActivity = millis();
+    init = false;
+    lastActivity = millis(); // Reset activity timer
     gameState = STATE_MAIN_MENU;
-    lcdClearBuffered();
-    return;
+    lcd.clear();
+    drawMainMenu();
   }
-
-  // Screensaver after idle timeout (1 minute by default)
-  const unsigned long IDLE_TIMEOUT = 60000;
-  if (millis() - idleLastActivity > IDLE_TIMEOUT) {
+  
+  // Screensaver after idle
+  if (millis() - lastActivity > idleTimeout) {
     gameState = STATE_SCREENSAVER;
-    idleLastActivity = millis();
-    lcdClearBuffered();
+    lastActivity = millis(); // Reset so it doesn't immediately trigger again
+    lcd.clear();
   }
 }
 
-// ---------- Main menu ----------
-byte mainMenuSelection = 0;
 void drawMainMenu() {
-  lcdClearBuffered();
-  char buf[17];
-  snprintf(buf, sizeof(buf), ">%s", mainMenuItems[mainMenuSelection]);
-  lcdWriteBuffered(0, 0, buf);
-  lcdWriteBuffered(0, 1, "Press to select ");
+  lcd.setCursor(0, 0);
+  lcd.print(">");
+  lcd.print(mainMenuItems[mainMenuSelection]);
+  lcd.print("        ");
+  lcd.setCursor(0, 1);
+  lcd.print("Press to select ");
 }
 
 void updateMainMenu() {
   if (buttonAction == 1) {
     mainMenuSelection = (mainMenuSelection + 1) % 6;
     drawMainMenu();
-  } else if (buttonAction == 2) {
-    // hold to enter
-    lcdClearBuffered();
-    switch (mainMenuSelection) {
-      case 0: gameState = STATE_GAMES_MENU; break;
+  }
+  else if (buttonAction == 2) {
+    lcd.clear();
+    switch(mainMenuSelection) {
+      case 0: gameState = STATE_GAMES_MENU; drawGamesMenu(); break;
       case 1: gameState = STATE_STOPWATCH; break;
       case 2: gameState = STATE_CALCULATOR; break;
       case 3: gameState = STATE_DICE; break;
       case 4: gameState = STATE_STATS; break;
       case 5: gameState = STATE_SETTINGS; break;
     }
-    // immediate draw
-    if (gameState == STATE_GAMES_MENU) {
-      // draw games menu next frame
-    }
   }
 }
 
-// ---------- Games Menu ----------
-byte gamesMenuSelection = 0;
 void drawGamesMenu() {
-  lcdClearBuffered();
-  char buf[17];
-  snprintf(buf, sizeof(buf), ">%s", gameNames[gamesMenuSelection]);
-  lcdWriteBuffered(0, 0, buf);
-  char hi[17];
-  snprintf(hi, sizeof(hi), "Hi:%u         ", highScores[gamesMenuSelection]);
-  lcdWriteBuffered(0, 1, hi);
+  lcd.setCursor(0, 0);
+  lcd.print(">");
+  lcd.print(gameNames[gamesMenuSelection]);
+  lcd.print("        ");
+  lcd.setCursor(0, 1);
+  lcd.print("Hi:");
+  lcd.print(highScores[gamesMenuSelection]);
+  lcd.print("         ");
 }
 
 void updateGamesMenu() {
+  playIdleFight(true);
   if (buttonAction == 1) {
     gamesMenuSelection = (gamesMenuSelection + 1) % 6;
     drawGamesMenu();
-  } else if (buttonAction == 2) {
-    // start selected game
-    switch (gamesMenuSelection) {
-      case 0: gameState = STATE_RUNNER; break;
-      case 1: gameState = STATE_SNAKE; break;
-      case 2: gameState = STATE_REACTION; break;
-      case 3: gameState = STATE_PONG; break;
-      case 4: gameState = STATE_MEMORY; break;
-      case 5: gameState = STATE_FLAPPY; break;
-    }
-    lcdClearBuffered();
+  }
+  else if (buttonAction == 2) {
+    lcd.clear();
+    if (gamesMenuSelection == 0) gameState = STATE_RUNNER;
+    else if (gamesMenuSelection == 1) gameState = STATE_SNAKE;
+    else if (gamesMenuSelection == 2) gameState = STATE_REACTION;
+    else if (gamesMenuSelection == 3) gameState = STATE_PONG;
+    else if (gamesMenuSelection == 4) gameState = STATE_MEMORY;
+    else if (gamesMenuSelection == 5) gameState = STATE_FLAPPY;
   }
 }
 
-// ---------- Pause Menu ----------
-byte pauseSelection = 0;
-unsigned long pauseHoldStart = 0;
+static unsigned long pauseHoldStart = 0;
 void updatePause() {
   if (buttonAction == 1) {
     pauseSelection = (pauseSelection + 1) % 2;
     pauseHoldStart = millis();
-    if (pauseSelection == 0) lcd.setCursor(0, 1), lcd.print(">Resume   Quit  ");
-    else lcd.setCursor(0, 1), lcd.print(" Resume  >Quit  ");
+    lcd.setCursor(0, 1);
+    if (pauseSelection == 0) lcd.print(">Resume   Quit  ");
+    else lcd.print(" Resume  >Quit  ");
   }
-
+  
   if (pauseHoldStart > 0) {
     unsigned long elapsed = millis() - pauseHoldStart;
-    int progress = (elapsed * 9) / HOLD_TIME;
-    if (progress > 9) progress = 9;
+    int progress = (elapsed * 16) / HOLD_TIME;
+    if (progress > 16) progress = 16;
+    
     lcd.setCursor(0, 0);
     if (pauseSelection == 0) lcd.print("RESUME?");
-    else lcd.print("QUIT?");
-    for (int i = 0; i < 9; ++i) lcd.print(i < progress ? '\xFF' : ' ');
+    else lcd.print("QUIT?  ");
+    for (int i = 0; i < 9; i++) {
+      lcd.print(i < (progress * 9 / 16) ? "\xFF" : " ");
+    }
+    
     if (elapsed >= HOLD_TIME) {
       if (pauseSelection == 0) {
         gameState = previousGame;
-        lcdClearBuffered();
+        lcd.clear();
       } else {
         gameIsActive = false;
         gameState = STATE_IDLE;
-        lcdClearBuffered();
+        lcd.clear();
       }
       pauseHoldStart = 0;
       return;
@@ -421,129 +395,149 @@ void updatePause() {
     lcd.setCursor(0, 0);
     lcd.print("    PAUSED      ");
   }
-
+  
   if (buttonAction == 2) {
-    // quick select
     if (pauseSelection == 0) {
       gameState = previousGame;
-      lcdClearBuffered();
+      lcd.clear();
     } else {
       gameIsActive = false;
       gameState = STATE_IDLE;
-      lcdClearBuffered();
+      lcd.clear();
     }
     pauseHoldStart = 0;
   }
 }
 
-// ---------- RUNNER (improved, non-blocking) ----------
-static char terrainUpper[TERRAIN_WIDTH + 1];
-static char terrainLower[TERRAIN_WIDTH + 1];
-
+// ==================== RUNNER WITH COINS ====================
 void initRunnerGraphics() {
+  lcd.createChar(1, heroRun1);
+  lcd.createChar(2, heroRun2);
+  lcd.createChar(3, heroJump);
+  lcd.createChar(4, coin);
+  lcd.createChar(5, blockFull);
+  lcd.createChar(6, blockRight);
+  lcd.createChar(7, blockLeft);
   for (int i = 0; i < TERRAIN_WIDTH; ++i) {
     terrainUpper[i] = ' ';
     terrainLower[i] = ' ';
   }
-  terrainUpper[TERRAIN_WIDTH] = '\0';
-  terrainLower[TERRAIN_WIDTH] = '\0';
 }
 
 void advanceTerrain(char* terrain, byte newTerrain) {
-  // shift left (index 0 is leftmost), we model scrolling right-to-left visually
-  for (int i = 0; i < TERRAIN_WIDTH - 1; ++i) terrain[i] = terrain[i + 1];
-  // place new terrain at far right
-  terrain[TERRAIN_WIDTH - 1] = (char)newTerrain;
+  for (int i = 0; i < TERRAIN_WIDTH; ++i) {
+    char current = terrain[i];
+    char next = (i == TERRAIN_WIDTH-1) ? newTerrain : terrain[i+1];
+    
+    // Don't modify coins - let them scroll naturally
+    if (current == 4) {
+      terrain[i] = (i == TERRAIN_WIDTH-1) ? newTerrain : terrain[i+1];
+      continue;
+    }
+    
+    switch (current) {
+      case ' ': 
+        terrain[i] = (next == 5) ? 6 : (next == 4 ? 4 : ' '); 
+        break;
+      case 5: 
+        terrain[i] = (next == ' ' || next == 4) ? 7 : 5; 
+        break;
+      case 6: 
+        terrain[i] = 5; 
+        break;
+      case 7: 
+        terrain[i] = ' '; 
+        break;
+    }
+  }
 }
 
 void runnerGame() {
-  static byte heroPos = 1; // 1..12 states for animation
-  static byte newTerrainType = 0;
-  static byte newTerrainDuration = 1;
-  static unsigned long lastRunnerFrame = 0;
+  static byte heroPos = 1;
+  static byte newTerrainType = 0, newTerrainDuration = 1;
+  static bool playing = false;
   static bool showTitle = true;
   static bool titleBlink = false;
-  static unsigned long lastTitleBlink = 0;
   static unsigned int coins = 0;
   static bool showScore = false;
+  static unsigned long lastTitleBlink = 0;
+  static unsigned long gameStartTime = 0;
   static byte lastObstacleRow = 0;
-  static byte obstacleGap = 0;
-  static unsigned long frameTimer = 0;
-
+  static byte obstacleGap = 0; // Ensure minimum gap between obstacles
+  
   if (showScore) {
     gameIsActive = false;
-    char buf[17];
-    snprintf(buf, sizeof(buf), "Coins:%u       ", coins);
-    lcdWriteBuffered(0, 0, buf);
-    snprintf(buf, sizeof(buf), "Best:%u        ", highScores[0]);
-    lcdWriteBuffered(0, 1, buf);
-
+    lcd.setCursor(0, 0);
+    lcd.print("Coins:");
+    lcd.print(coins);
+    lcd.print("        ");
+    lcd.setCursor(0, 1);
+    lcd.print("Best:");
+    lcd.print(highScores[0]);
+    lcd.print("         ");
     if (buttonAction == 1 || buttonAction == 2) {
-      // increment gamesPlayed and save
       gamesPlayed[0]++;
-      saveGamesPlayedToEEPROM(0);
       showScore = false;
       showTitle = true;
-      lcdClearBuffered();
+      lcd.clear();
     }
     return;
   }
-
+  
   if (showTitle) {
     gameIsActive = false;
     if (millis() - lastTitleBlink > 500) {
       titleBlink = !titleBlink;
       lastTitleBlink = millis();
-      lcdClearBuffered();
-      if (titleBlink) {
-        lcdWriteBuffered(0, 0, "Runner - Click");
-        lcdWriteBuffered(0, 1, "Hold=Back       ");
-      } else {
-        lcdWriteBuffered(0, 0, "                ");
-        lcdWriteBuffered(0, 1, "                ");
-      }
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "Click to start  " : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "                " : "Hold for menu   ");
     }
     if (buttonAction == 1) {
       initRunnerGraphics();
-      heroPos = 1;
-      coins = 0;
-      newTerrainType = 0;
-      newTerrainDuration = 1;
+      heroPos = 1; playing = true; coins = 0;
+      newTerrainType = 0; newTerrainDuration = 1;
       gameIsActive = true;
       showTitle = false;
       gameStartTime = millis();
       lastObstacleRow = 0;
       obstacleGap = 0;
-      lcdClearBuffered();
+      lcd.clear();
     }
     if (buttonAction == 2) {
       showTitle = true;
       gameState = STATE_IDLE;
-      lcdClearBuffered();
+      lcd.clear();
     }
     return;
   }
 
-  // Game frame
-  if (!frameReady()) return;
-
-  // generate terrain occasionally
+  // Generate terrain
   if (--newTerrainDuration == 0) {
     if (newTerrainType == 0) {
       if (obstacleGap > 0) {
         obstacleGap--;
-        newTerrainType = (random(2) == 0) ? 3 : 4; // coin
+        // Only spawn coins during obstacle cooldown
+        newTerrainType = (random(2) == 0) ? 3 : 4;
         newTerrainDuration = 2;
       } else {
         int r = random(10);
         if (r < 6) {
-          newTerrainType = (random(2) == 0) ? 3 : 4; // coin
+          // Coin
+          newTerrainType = (random(2) == 0) ? 3 : 4;
           newTerrainDuration = 2;
         } else {
-          if (lastObstacleRow == 1) { newTerrainType = 2; lastObstacleRow = 2; }
-          else { newTerrainType = 1; lastObstacleRow = 1; }
+          // Obstacle - ensure it's on different row than last
+          if (lastObstacleRow == 1) {
+            newTerrainType = 2; // Upper
+            lastObstacleRow = 2;
+          } else {
+            newTerrainType = 1; // Lower
+            lastObstacleRow = 1;
+          }
           newTerrainDuration = 2;
-          obstacleGap = 3;
+          obstacleGap = 3; // Minimum 3 frames gap between obstacles
         }
       }
     } else {
@@ -552,891 +546,1247 @@ void runnerGame() {
     }
   }
 
-  advanceTerrain(terrainLower, (newTerrainType == 1) ? 5 : (newTerrainType == 3 ? 4 : ' '));
-  advanceTerrain(terrainUpper, (newTerrainType == 2) ? 5 : (newTerrainType == 4 ? 4 : ' '));
-
-  // input
+  advanceTerrain(terrainLower, newTerrainType == 1 ? 5 : (newTerrainType == 3 ? 4 : ' '));
+  advanceTerrain(terrainUpper, newTerrainType == 2 ? 5 : (newTerrainType == 4 ? 4 : ' '));
+  
   if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause) {
     if (heroPos <= 2) heroPos = 3;
   }
 
-  // collision detection at player column (HERO_HORIZONTAL_POSITION)
   char upperSave = terrainUpper[HERO_HORIZONTAL_POSITION];
   char lowerSave = terrainLower[HERO_HORIZONTAL_POSITION];
-  char upper = ' ', lower = ' ';
+  byte upper = ' ', lower = ' ';
   bool collide = false;
   bool gotCoin = false;
-
-  // hero vertical mapping
-  if (heroPos <= 2) { upper = ' '; lower = heroPos; }
-  else if (heroPos >= 5 && heroPos <= 8) { upper = 3; lower = ' '; }
-  else if (heroPos >= 11) { upper = (heroPos == 11) ? 1 : 2; lower = ' '; }
-  else { upper = ' '; lower = 3; }
-
-  if (upperSave == 4 && upper != ' ') { gotCoin = true; upperSave = ' '; }
-  if (lowerSave == 4 && lower != ' ') { gotCoin = true; lowerSave = ' '; }
+  
+  // Set hero sprite based on position
+  if (heroPos <= 2) { 
+    upper = ' '; 
+    lower = heroPos; 
+  }
+  else if (heroPos == 3 || heroPos == 10) { 
+    upper = ' '; 
+    lower = 3; 
+  }
+  else if (heroPos == 4 || heroPos == 9) { 
+    upper = ' '; 
+    lower = 3; 
+  }
+  else if (heroPos >= 5 && heroPos <= 8) { 
+    upper = 3; 
+    lower = ' '; 
+  }
+  else if (heroPos >= 11) { 
+    upper = (heroPos == 11) ? 1 : 2; 
+    lower = ' '; 
+  }
+  
+  // Check coin collection BEFORE drawing hero
+  if (upperSave == 4 && upper != ' ') {
+    gotCoin = true;
+    upperSave = ' ';
+  }
+  if (lowerSave == 4 && lower != ' ') {
+    gotCoin = true;
+    lowerSave = ' ';
+  }
+  
   if (gotCoin) coins++;
-
-  if (upper != ' ') {
+  
+  // Check collision with obstacles
+  if (upper != ' ') { 
     collide = (upperSave == 5 || upperSave == 6 || upperSave == 7);
     terrainUpper[HERO_HORIZONTAL_POSITION] = upper;
   }
-  if (lower != ' ') {
+  if (lower != ' ') { 
     collide |= (lowerSave == 5 || lowerSave == 6 || lowerSave == 7);
     terrainLower[HERO_HORIZONTAL_POSITION] = lower;
   }
-
-  // draw terrain (optimized diff)
-  // top row
-  for (int i = 0; i < TERRAIN_WIDTH; ++i) {
-    char ch = terrainUpper[i];
-    char curr = lcdBuf[0][i];
-    char outCh = (ch == ' ' ? ' ' : (ch == 4 ? '*' : (ch == 5 ? '#' : (ch == 6 ? '>' : (ch == 7 ? '<' : '?')))));
-    if (curr != outCh) {
-      lcdWriteBufferedChar(i, 0, outCh);
+  
+  terrainUpper[TERRAIN_WIDTH] = '\0';
+  terrainLower[TERRAIN_WIDTH] = '\0';
+  
+  // Optimized drawing - only update changed positions
+  static char lastUpper[TERRAIN_WIDTH + 1] = "";
+  static char lastLower[TERRAIN_WIDTH + 1] = "";
+  
+  for (int i = 0; i < TERRAIN_WIDTH; i++) {
+    if (terrainUpper[i] != lastUpper[i]) {
+      lcd.setCursor(i, 0);
+      if (terrainUpper[i] == ' ') lcd.print(' ');
+      else lcd.write(terrainUpper[i]);
+      lastUpper[i] = terrainUpper[i];
     }
   }
-  // bottom row
-  for (int i = 0; i < TERRAIN_WIDTH; ++i) {
-    char ch = terrainLower[i];
-    char curr = lcdBuf[1][i];
-    char outCh = (ch == ' ' ? ' ' : (ch == 4 ? '*' : (ch == 5 ? '#' : (ch == 6 ? '>' : (ch == 7 ? '<' : '?')))));
-    if (curr != outCh) {
-      lcdWriteBufferedChar(i, 1, outCh);
+  
+  for (int i = 0; i < TERRAIN_WIDTH; i++) {
+    if (terrainLower[i] != lastLower[i]) {
+      lcd.setCursor(i, 1);
+      if (terrainLower[i] == ' ') lcd.print(' ');
+      else lcd.write(terrainLower[i]);
+      lastLower[i] = terrainLower[i];
     }
   }
-  // HUD
-  char hud[17];
-  snprintf(hud, sizeof(hud), "Coins:%u   Hi:%u", coins, highScores[0]);
-  lcdWriteBuffered(0, 0, hud);
-
-  // restore terrain
+  
+  // Update score display
+  static unsigned int lastCoins = 9999;
+  if (coins != lastCoins) {
+    lcd.setCursor(12, 0);
+    lcd.print(coins);
+    lcd.print("  ");
+    lastCoins = coins;
+  }
+  
+  // Restore terrain for next frame
   terrainUpper[HERO_HORIZONTAL_POSITION] = upperSave;
   terrainLower[HERO_HORIZONTAL_POSITION] = lowerSave;
 
   if (collide) {
-    // game over
-    gameIsActive = false;
-    // update stats
-    // save highscore
-    if (coins > highScores[0]) {
-      highScores[0] = coins;
-      saveHighScoreToEEPROM(0);
-      // show new record
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "Game Over!");
-      lcdWriteBuffered(0, 1, "NEW HIGH SCORE!");
-      // small blocking to show message (short)
-      unsigned long t0 = millis();
-      while (millis() - t0 < 1200) { updateButton(); /* keep responsive*/ }
-    } else {
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "Game Over!");
-      lcdWriteBuffered(0, 1, "Press to cont.");
-      unsigned long t0 = millis();
-      while (millis() - t0 < 700) { updateButton(); }
-    }
-    // stats
-    gamesPlayed[0]++;
-    saveGamesPlayedToEEPROM(0);
     totalPlayTime[0] += (millis() - gameStartTime) / 1000;
-    saveTotalPlayTimeToEEPROM(0);
-    showTitle = true;
-    // show score page
-    lcdClearBuffered();
-    char s1[17];
-    snprintf(s1, sizeof(s1), "Coins:%u   Best:%u", coins, highScores[0]);
-    lcdWriteBuffered(0, 0, s1);
-    showTitle = true;
-    return;
+    saveHighScore(0, coins);
+    playing = false;
+    showScore = true;
+  } else {
+    // Hero animation state machine
+    if (heroPos == 2 || heroPos == 10) heroPos = 1;
+    else if ((heroPos >= 5 && heroPos <= 7) && (terrainLower[HERO_HORIZONTAL_POSITION] == 5 || terrainLower[HERO_HORIZONTAL_POSITION] == 6 || terrainLower[HERO_HORIZONTAL_POSITION] == 7)) heroPos = 11;
+    else if (heroPos >= 11 && terrainLower[HERO_HORIZONTAL_POSITION] == ' ') heroPos = 7;
+    else if (heroPos == 12) heroPos = 11;
+    else ++heroPos;
   }
-
-  // hero animation
-  if (heroPos == 2 || heroPos == 10) heroPos = 1;
-  else if ((heroPos >= 5 && heroPos <= 7) && (terrainLower[HERO_HORIZONTAL_POSITION] == 5 || terrainLower[HERO_HORIZONTAL_POSITION] == 6 || terrainLower[HERO_HORIZONTAL_POSITION] == 7)) heroPos = 11;
-  else if (heroPos >= 11 && terrainLower[HERO_HORIZONTAL_POSITION] == ' ') heroPos = 7;
-  else if (heroPos == 12) heroPos = 11;
-  else ++heroPos;
+  
+  int baseSpeed = (difficulty == 0) ? 120 : (difficulty == 1 ? 100 : 80);
+  int spd = coins >= 30 ? baseSpeed - 40 : (coins >= 15 ? baseSpeed - 20 : baseSpeed);
+  delay(spd);
 }
 
-// ---------- SNAKE (full-featured, 1-button controls) ----------
-static byte snakeX[32], snakeY[32];
-static byte snakeLen = 0;
-static byte foodX = 0, foodY = 0;
-static byte snakeDir = 0; // 0 = up, 1 = down
-
+// ==================== SNAKE (unchanged) ====================
 void initSnakeGraphics() {
-  // starting snake
-  snakeLen = 3;
-  for (byte i = 0; i < snakeLen; ++i) { snakeX[i] = 5 - i; snakeY[i] = 0; }
-  // spawn food
-  bool valid = false;
+  static byte head[] = {B00000,B01110,B11111,B10101,B11111,B01110,B00000,B00000};
+  static byte body[] = {B00000,B01110,B11111,B11111,B11111,B01110,B00000,B00000};
+  static byte food[] = {B00000,B00100,B01110,B11111,B01110,B00100,B00000,B00000};
+  lcd.createChar(1, head);
+  lcd.createChar(2, body);
+  lcd.createChar(3, food);
+}
+
+void spawnFood() {
+  bool valid;
   do {
     valid = true;
     foodX = random(16);
     foodY = random(2);
-    for (byte i = 0; i < snakeLen; ++i) if (snakeX[i] == foodX && snakeY[i] == foodY) valid = false;
+    for (byte i = 0; i < snakeLen; i++) {
+      if (snakeX[i] == foodX && snakeY[i] == foodY) valid = false;
+    }
   } while (!valid);
 }
 
 void snakeGame() {
+  static bool playing = false;
   static bool showTitle = true;
+  static bool titleBlink = false;
   static unsigned long lastMove = 0;
   static unsigned long lastTitleBlink = 0;
-  static bool titleBlink = false;
   static unsigned int score = 0;
   static bool showScore = false;
-
+  static unsigned long gameStartTime = 0;
+  
   if (showScore) {
     gameIsActive = false;
-    char buf[17];
-    snprintf(buf, sizeof(buf), "Score:%u   High:%u", score, highScores[1]);
-    lcdWriteBuffered(0, 0, buf);
-    lcdWriteBuffered(0, 1, "Press to cont.");
+    lcd.setCursor(0, 0);
+    lcd.print("Score:");
+    lcd.print(score);
+    lcd.print("        ");
+    lcd.setCursor(0, 1);
+    lcd.print("High:");
+    lcd.print(highScores[1]);
+    lcd.print("         ");
     if (buttonAction == 1 || buttonAction == 2) {
       gamesPlayed[1]++;
-      saveGamesPlayedToEEPROM(1);
       showScore = false;
       showTitle = true;
-      lcdClearBuffered();
+      lcd.clear();
     }
     return;
   }
-
+  
   if (showTitle) {
     gameIsActive = false;
     if (millis() - lastTitleBlink > 500) {
       titleBlink = !titleBlink;
       lastTitleBlink = millis();
-      lcdClearBuffered();
-      if (titleBlink) {
-        lcdWriteBuffered(0, 0, "Snake - Click");
-        lcdWriteBuffered(0, 1, "Hold=Back      ");
-      }
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "Click to start  " : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "                " : "Hold for menu   ");
     }
     if (buttonAction == 1) {
       initSnakeGraphics();
-      score = 0;
-      snakeDir = 0;
-      showTitle = false;
+      snakeLen = 3; snakeDir = 0; score = 0;
+      for (byte i = 0; i < snakeLen; i++) { snakeX[i] = 5 - i; snakeY[i] = 0; }
+      spawnFood();
+      playing = true;
       gameIsActive = true;
+      showTitle = false;
       gameStartTime = millis();
-      lcdClearBuffered();
+      lcd.clear();
     }
     if (buttonAction == 2) {
+      showTitle = true;
       gameState = STATE_IDLE;
-      lcdClearBuffered();
+      lcd.clear();
     }
     return;
   }
 
-  // Flip direction on click
   if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause) {
     snakeDir = (snakeDir == 0) ? 1 : 0;
+    delay(150);
   }
 
-  // speed by difficulty
-  int baseSpeed = (difficultyPerGame[1] == 0) ? 300 : (difficultyPerGame[1] == 1 ? 220 : 160);
+  int baseSpeed = (difficulty == 0) ? 300 : (difficulty == 1 ? 250 : 200);
   if (millis() - lastMove < (unsigned long)(baseSpeed - score * 3)) return;
   lastMove = millis();
 
-  // move head
   byte newX = snakeX[0] + 1;
   byte newY = snakeY[0];
   if (snakeDir == 0 && newY > 0) newY--;
   else if (snakeDir == 1 && newY < 1) newY++;
   if (newX > 15) newX = 0;
 
-  // collision with self
-  for (byte i = 1; i < snakeLen; ++i) if (snakeX[i] == newX && snakeY[i] == newY) {
-    // game over
-    totalPlayTime[1] += (millis() - gameStartTime) / 1000;
-    // score is length-3
-    uint16_t s = snakeLen - 3;
-    if (s > highScores[1]) { highScores[1] = s; saveHighScoreToEEPROM(1); }
-    gamesPlayed[1]++;
-    saveGamesPlayedToEEPROM(1);
-    saveTotalPlayTimeToEEPROM(1);
-    showScore = true;
-    return;
+  for (byte i = 1; i < snakeLen; i++) {
+    if (snakeX[i] == newX && snakeY[i] == newY) {
+      totalPlayTime[1] += (millis() - gameStartTime) / 1000;
+      saveHighScore(1, score);
+      playing = false;
+      showScore = true;
+      return;
+    }
   }
 
-  for (byte i = snakeLen; i > 0; --i) { snakeX[i] = snakeX[i - 1]; snakeY[i] = snakeY[i - 1]; }
-  snakeX[0] = newX; snakeY[0] = newY;
+  for (byte i = snakeLen; i > 0; i--) {
+    snakeX[i] = snakeX[i-1];
+    snakeY[i] = snakeY[i-1];
+  }
+  snakeX[0] = newX;
+  snakeY[0] = newY;
 
   if (newX == foodX && newY == foodY) {
     snakeLen++;
     score++;
-    // spawn new food
-    bool valid;
-    do {
-      valid = true;
-      foodX = random(16);
-      foodY = random(2);
-      for (byte i = 0; i < snakeLen; ++i) if (snakeX[i] == foodX && snakeY[i] == foodY) valid = false;
-    } while (!valid);
+    spawnFood();
   }
 
-  // draw - clear last frame and draw snake
-  lcdClearBuffered();
-  for (byte i = 0; i < snakeLen; ++i) {
-    lcdWriteBufferedChar(snakeX[i], snakeY[i], (i == 0) ? 'O' : 'o');
+  static byte lastSnakeX[32], lastSnakeY[32], lastLen = 0;
+  static byte lastFoodX = 255, lastFoodY = 255;
+  static unsigned int lastScore = 9999;
+  
+  for (byte i = 0; i < lastLen; i++) {
+    bool stillOccupied = false;
+    for (byte j = 0; j < snakeLen; j++) {
+      if (snakeX[j] == lastSnakeX[i] && snakeY[j] == lastSnakeY[i]) {
+        stillOccupied = true;
+        break;
+      }
+    }
+    if (!stillOccupied && !(lastSnakeX[i] == foodX && lastSnakeY[i] == foodY)) {
+      lcd.setCursor(lastSnakeX[i], lastSnakeY[i]);
+      lcd.print(' ');
+    }
   }
-  lcdWriteBufferedChar(foodX, foodY, '*');
-  char hud[17]; snprintf(hud, sizeof(hud), "Len:%u  Hi:%u    ", score, highScores[1]);
-  lcdWriteBuffered(0, 0, hud);
+  
+  if (lastFoodX != foodX || lastFoodY != foodY) {
+    lcd.setCursor(lastFoodX, lastFoodY);
+    lcd.print(' ');
+  }
+  
+  for (byte i = 0; i < snakeLen; i++) {
+    lcd.setCursor(snakeX[i], snakeY[i]);
+    lcd.write(i == 0 ? 1 : 2);
+    lastSnakeX[i] = snakeX[i];
+    lastSnakeY[i] = snakeY[i];
+  }
+  lastLen = snakeLen;
+  
+  lcd.setCursor(foodX, foodY);
+  lcd.write(3);
+  lastFoodX = foodX;
+  lastFoodY = foodY;
+  
+  if (score != lastScore) {
+    lcd.setCursor(14, 0);
+    lcd.print(score);
+    lcd.print(" ");
+    lastScore = score;
+  }
 }
 
-// ---------- REACTION ----------
+// ==================== REACTION (unchanged) ====================
 void reactionGame() {
-  static byte phase = 0; // 0=title,1=waiting random,2=now,3=show
-  static unsigned long waitStart = 0;
-  static unsigned long targetTime = 0;
-  static unsigned int bestTime = 99999;
-  static unsigned long gameStart = 0;
-
-  if (phase == 0) {
+  static byte phase = 0;
+  static unsigned long waitStart = 0, targetTime = 0;
+  static unsigned int bestTime = 9999;
+  static bool showScore = false;
+  static bool titleBlink = false;
+  static unsigned long lastTitleBlink = 0;
+  static unsigned long gameStartTime = 0;
+  
+  if (showScore) {
     gameIsActive = false;
-    lcdClearBuffered();
-    lcdWriteBuffered(0, 0, "Reaction");
-    lcdWriteBuffered(0, 1, "Click=start");
-    if (buttonAction == 1) {
-      phase = 1;
-      waitStart = millis();
-      targetTime = random(1000, 3000);
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "Wait...");
-      gameIsActive = true;
-      gameStart = millis();
-    } else if (buttonAction == 2) {
-      gameState = STATE_IDLE;
-      lcdClearBuffered();
+    lcd.setCursor(0, 0);
+    lcd.print("Best:");
+    lcd.print(bestTime);
+    lcd.print("ms      ");
+    lcd.setCursor(0, 1);
+    lcd.print("Record:");
+    lcd.print(highScores[2]);
+    lcd.print("ms   ");
+    delay(100);
+    if (buttonAction == 1 || buttonAction == 2) {
+      gamesPlayed[2]++;
+      showScore = false;
+      phase = 0;
+      lcd.clear();
     }
     return;
   }
-
+  
+  if (phase == 0) {
+    gameIsActive = false;
+    if (millis() - lastTitleBlink > 500) {
+      titleBlink = !titleBlink;
+      lastTitleBlink = millis();
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "Click to start  " : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "                " : "Hold for menu   ");
+    }
+    if (buttonAction == 1) {
+      phase = 1;
+      waitStart = millis();
+      targetTime = random(2000, 5000);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Wait for it...");
+      gameIsActive = true;
+      gameStartTime = millis();
+      delay(200);
+    }
+    if (buttonAction == 2) {
+      gameState = STATE_IDLE;
+      lcd.clear();
+    }
+    return;
+  }
+  
   if (phase == 1) {
-    updateButton();
     if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause) {
-      // too early
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "Too Early!");
-      // count playtime
-      totalPlayTime[2] += (millis() - gameStart) / 1000;
-      saveTotalPlayTimeToEEPROM(2);
-      phase = 0;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Too early!");
       gameIsActive = false;
-      unsigned long t0 = millis();
-      while (millis() - t0 < 800) { updateButton(); } // short pause
-      lcdClearBuffered();
+      delay(1500);
+      phase = 0;
+      showScore = true;
+      lcd.clear();
       return;
     }
     if (millis() - waitStart >= targetTime) {
       phase = 2;
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "NOW!");
       waitStart = millis();
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(">>> NOW! <<<");
     }
     return;
   }
-
+  
   if (phase == 2) {
     if (digitalRead(PIN_BUTTON) == LOW) {
       unsigned int reaction = millis() - waitStart;
-      char buf[17];
-      snprintf(buf, sizeof(buf), "Time:%u ms    ", reaction);
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, buf);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Time: ");
+      lcd.print(reaction);
+      lcd.print("ms");
       if (reaction < bestTime) bestTime = reaction;
       if (highScores[2] == 0 || reaction < highScores[2]) {
-        highScores[2] = reaction;
-        saveHighScoreToEEPROM(2);
-        lcdWriteBuffered(0, 1, "NEW RECORD!");
+        saveHighScore(2, reaction);
+        lcd.setCursor(0, 1);
+        lcd.print("NEW RECORD!");
       }
-      totalPlayTime[2] += (millis() - gameStart) / 1000;
-      saveTotalPlayTimeToEEPROM(2);
-      gamesPlayed[2]++;
-      saveGamesPlayedToEEPROM(2);
+      totalPlayTime[2] += (millis() - gameStartTime) / 1000;
       gameIsActive = false;
+      delay(2000);
       phase = 0;
-      unsigned long t0 = millis();
-      while (millis() - t0 < 1500) { updateButton(); }
-      lcdClearBuffered();
-    } else if (millis() - waitStart > 3000) {
-      lcdClearBuffered();
-      lcdWriteBuffered(0, 0, "Too slow!");
-      totalPlayTime[2] += (millis() - gameStart) / 1000;
-      saveTotalPlayTimeToEEPROM(2);
-      gamesPlayed[2]++;
-      saveGamesPlayedToEEPROM(2);
+      showScore = true;
+      lcd.clear();
+    }
+    if (millis() - waitStart > 2000) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Too slow!");
+      totalPlayTime[2] += (millis() - gameStartTime) / 1000;
       gameIsActive = false;
+      delay(1500);
       phase = 0;
-      unsigned long t0 = millis();
-      while (millis() - t0 < 1000) { updateButton(); }
-      lcdClearBuffered();
-    }
-    return;
-  }
-}
-
-// ---------- PONG (simple 1-button) ----------
-void pongGame() {
-  static bool showTitle = true;
-  static unsigned long lastMove = 0;
-  static int ballX = 8, ballY = 0;
-  static int ballDX = 1, ballDY = 1;
-  static byte paddleY = 0;
-  static byte cpuY = 1;
-  static int score = 0, cpuScore = 0;
-  static bool showScore = false;
-  static unsigned long gameStart = 0;
-
-  if (showScore) {
-    gameIsActive = false;
-    char buf[17];
-    if (score > cpuScore) snprintf(buf, sizeof(buf), "YOU WIN %d-%d     ", score, cpuScore);
-    else snprintf(buf, sizeof(buf), "YOU LOSE %d-%d    ", score, cpuScore);
-    lcdWriteBuffered(0, 0, buf);
-    char hi[17]; snprintf(hi, sizeof(hi), "Best:%u P:%u", highScores[3], gamesPlayed[3]);
-    lcdWriteBuffered(0, 1, hi);
-    if (buttonAction == 1 || buttonAction == 2) {
-      gamesPlayed[3]++;
-      saveGamesPlayedToEEPROM(3);
-      showScore = false;
-      showTitle = true;
-      score = cpuScore = 0;
-      lcdClearBuffered();
-    }
-    return;
-  }
-
-  if (showTitle) {
-    gameIsActive = false;
-    static bool blink = false;
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 500) { blink = !blink; lastBlink = millis(); }
-    if (blink) { lcdWriteBuffered(0, 0, "PONG - Click"); lcdWriteBuffered(0, 1, "Hold=Back"); }
-    else { lcdWriteBuffered(0, 0, "              "); lcdWriteBuffered(0, 1, "           "); }
-    if (buttonAction == 1) {
-      ballX = 8; ballY = random(2);
-      ballDX = (random(2) == 0) ? -1 : 1;
-      ballDY = (random(2) == 0) ? -1 : 1;
-      paddleY = 0;
-      cpuY = 1;
-      score = cpuScore = 0;
-      showTitle = false;
-      gameIsActive = true;
-      gameStart = millis();
-      lcdClearBuffered();
-    }
-    if (buttonAction == 2) {
-      showTitle = true;
-      gameState = STATE_IDLE;
-      lcdClearBuffered();
-    }
-    return;
-  }
-
-  if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause) {
-    paddleY = (paddleY == 0) ? 1 : 0; // toggle
-    // small debounce
-    unsigned long t0 = millis();
-    while (millis() - t0 < 120) updateButton();
-  }
-
-  if (millis() - lastMove < 180) return;
-  lastMove = millis();
-
-  if (ballX > 8 && ballDX > 0 && random(10) < 7) cpuY = ballY;
-  ballX += ballDX;
-  ballY += ballDY;
-  if (ballY >= 1) { ballY = 1; ballDY = -1; }
-  if (ballY <= 0) { ballY = 0; ballDY = 1; }
-
-  // collision with player paddle
-  if (ballX == 1 && ballY == paddleY && ballDX < 0) {
-    ballDX = 1;
-    ballDY = (random(2) == 0) ? -1 : 1;
-  }
-  // collision with cpu paddle
-  if (ballX == 14 && ballY == cpuY && ballDX > 0) {
-    ballDX = -1;
-    ballDY = (random(2) == 0) ? -1 : 1;
-  }
-
-  if (ballX <= 0 && ballDX < 0) {
-    cpuScore++;
-    if (cpuScore >= 5) {
-      totalPlayTime[3] += (millis() - gameStart) / 1000;
-      if (score > highScores[3]) { highScores[3] = score; saveHighScoreToEEPROM(3); }
-      saveTotalPlayTimeToEEPROM(3);
-      gamesPlayed[3]++;
-      saveGamesPlayedToEEPROM(3);
-      lcdClearBuffered();
       showScore = true;
-      return;
+      lcd.clear();
     }
-    ballX = 8; ballY = random(2);
-    ballDX = 1; ballDY = (random(2) == 0) ? -1 : 1;
-  }
-
-  if (ballX >= 15 && ballDX > 0) {
-    score++;
-    if (score >= 5) {
-      totalPlayTime[3] += (millis() - gameStart) / 1000;
-      if (score > highScores[3]) { highScores[3] = score; saveHighScoreToEEPROM(3); }
-      saveTotalPlayTimeToEEPROM(3);
-      gamesPlayed[3]++;
-      saveGamesPlayedToEEPROM(3);
-      lcdClearBuffered();
-      showScore = true;
-      return;
-    }
-    ballX = 8; ballY = random(2);
-    ballDX = -1; ballDY = (random(2) == 0) ? -1 : 1;
-  }
-
-  // draw
-  lcdClearBuffered();
-  // paddles
-  lcdWriteBufferedChar(0, paddleY, '|');
-  lcdWriteBufferedChar(15, cpuY, '|');
-  // ball
-  if (ballX >= 0 && ballX < 16 && ballY >= 0 && ballY < 2)
-    lcdWriteBufferedChar(ballX, ballY, 'o');
-  char scorebuf[17]; snprintf(scorebuf, sizeof(scorebuf), "%d - %d      Hi:%u", score, cpuScore, highScores[3]);
-  lcdWriteBuffered(0, 0, scorebuf);
-}
-
-// ---------- MEMORY (Simon-like top/bottom) ----------
-void memoryGame() {
-  static byte sequence[48];
-  static byte seqLen = 0;
-  static byte playerPos = 0;
-  static byte phase = 0; // 0=title,1=show,2=input,3=score
-  static unsigned long lastAction = 0;
-  static unsigned long showStart = 0;
-  static bool titleBlink = false;
-  static unsigned long lastTitleBlink = 0;
-  static unsigned int level = 0;
-
-  if (phase == 3) {
-    gameIsActive = false;
-    char buf[17]; snprintf(buf, sizeof(buf), "Level:%u Best:%u", level, highScores[4]);
-    lcdWriteBuffered(0, 0, buf);
-    lcdWriteBuffered(0, 1, "Press to cont.");
-    if (buttonAction == 1 || buttonAction == 2) {
-      gamesPlayed[4]++; saveGamesPlayedToEEPROM(4);
-      phase = 0; seqLen = 0; lcdClearBuffered();
-    }
-    return;
-  }
-
-  if (phase == 0) {
-    gameIsActive = false;
-    if (millis() - lastTitleBlink > 500) {
-      titleBlink = !titleBlink; lastTitleBlink = millis();
-      if (titleBlink) { lcdWriteBuffered(0, 0, "Memory - Click"); lcdWriteBuffered(0, 1, "Hold=Back"); }
-      else lcdClearBuffered();
-    }
-    if (buttonAction == 1) {
-      seqLen = 0; playerPos = 0; level = 0;
-      phase = 1; showStart = millis();
-      gameIsActive = true; gameStartTime = millis();
-      lcdClearBuffered();
-    }
-    if (buttonAction == 2) { gameState = STATE_IDLE; lcdClearBuffered(); }
-    return;
-  }
-
-  if (phase == 1) {
-    // add a new random top/bottom (0 or 1)
-    if (seqLen < 48) {
-      sequence[seqLen++] = random(2);
-    }
-    // show sequence
-    if (millis() - showStart > 500) {
-      // display items sequentially
-      static byte showIndex = 0;
-      if (showIndex < seqLen) {
-        lcdClearBuffered();
-        if (sequence[showIndex] == 0) lcdWriteBuffered(6, 0, "**");
-        else lcdWriteBuffered(6, 1, "**");
-        showIndex++;
-        showStart = millis();
-      } else {
-        // done showing
-        showIndex = 0;
-        phase = 2;
-        playerPos = 0;
-        lcdClearBuffered();
-        lcdWriteBuffered(0, 0, "Your turn!");
-      }
-    }
-    return;
-  }
-
-  if (phase == 2) {
-    // prompt shows progress
-    char buf[17]; snprintf(buf, sizeof(buf), "Done:%u/%u      ", playerPos, seqLen);
-    lcdWriteBuffered(0, 1, buf);
-    if (buttonAction == 1) {
-      // top (0)
-      if (0 == sequence[playerPos]) {
-        playerPos++;
-        lcdClearBuffered();
-        lcdWriteBuffered(0, 0, "Correct!");
-        delay(200);
-        if (playerPos >= seqLen) { level++; phase = 1; lcdClearBuffered(); }
-      } else {
-        // wrong
-        totalPlayTime[4] += (millis() - gameStartTime) / 1000; saveTotalPlayTimeToEEPROM(4);
-        if (level > highScores[4]) { highScores[4] = level; saveHighScoreToEEPROM(4); }
-        phase = 3; lcdClearBuffered(); lcdWriteBuffered(0, 0, "Wrong!"); delay(400);
-      }
-    } else if (buttonAction == 2) {
-      // bottom (1)
-      if (1 == sequence[playerPos]) {
-        playerPos++;
-        lcdClearBuffered();
-        lcdWriteBuffered(0, 0, "Correct!"); delay(200);
-        if (playerPos >= seqLen) { level++; phase = 1; lcdClearBuffered(); }
-      } else {
-        totalPlayTime[4] += (millis() - gameStartTime) / 1000; saveTotalPlayTimeToEEPROM(4);
-        if (level > highScores[4]) { highScores[4] = level; saveHighScoreToEEPROM(4); }
-        phase = 3; lcdClearBuffered(); lcdWriteBuffered(0, 0, "Wrong!"); delay(400);
-      }
-    }
-    return;
   }
 }
 
-// ---------- FLAPPY (fuller than earlier) ----------
-void flappyGame() {
-  static bool showTitle = true;
-  static unsigned long lastMove = 0;
-  static byte birdY = 0;
-  static byte pipeX = 15;
-  static byte pipeGap = 0;
-  static unsigned int score = 0;
-  static byte lives = 3;
-  static bool showScore = false;
-  static unsigned long gameStart = 0;
-  static bool btnPressed = false;
-  static unsigned long lastFlap = 0;
-  static bool hitPipe = false;
-  static unsigned long lastAnim = 0;
-  static byte birdFrame = 0;
-
-  if (showScore) {
-    gameIsActive = false;
-    char buf[17]; snprintf(buf, sizeof(buf), "Score:%u Best:%u", score, highScores[5]);
-    lcdWriteBuffered(0, 0, buf);
-    lcdWriteBuffered(0, 1, "Press to cont.");
-    if (buttonAction == 1 || buttonAction == 2) {
-      gamesPlayed[5]++; saveGamesPlayedToEEPROM(5);
-      showScore = false; showTitle = true;
-      lives = 3; score = 0; lcdClearBuffered();
-    }
-    return;
-  }
-
-  if (showTitle) {
-    gameIsActive = false;
-    static bool blink = false;
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 500) { blink = !blink; lastBlink = millis(); }
-    if (blink) { lcdWriteBuffered(0, 0, "Flappy - Click"); lcdWriteBuffered(0, 1, "Hold=Back     "); }
-    else lcdClearBuffered();
-    if (buttonAction == 1) {
-      // start
-      birdY = 0; pipeX = 15; pipeGap = random(2); score = 0; lives = 3;
-      showTitle = false; gameIsActive = true; gameStart = millis(); hitPipe = false;
-      lastFlap = millis(); lastAnim = millis(); lcdClearBuffered();
-    }
-    if (buttonAction == 2) { gameState = STATE_IDLE; lcdClearBuffered(); }
-    return;
-  }
-
-  // input: flap on click
-  bool currentBtn = (digitalRead(PIN_BUTTON) == LOW);
-  if (currentBtn && !btnPressed && !holdingForPause) {
-    birdY = 0;
-    btnPressed = true;
-    lastFlap = millis();
-    birdFrame = 0;
-  }
-  if (!currentBtn) btnPressed = false;
-
-  // gravity & movement every frame period
-  if (!frameReady()) return;
-
-  // gravity: after some time, bird falls
-  if (millis() - lastFlap > 400) birdY = 1;
-
-  // move pipe
-  if (pipeX > 0) pipeX--;
-  else { pipeX = 15; pipeGap = random(2); score++; }
-
-  // collision check at x==2
-  if (pipeX == 2 && !hitPipe) {
-    bool hit = false;
-    if (pipeGap == 0 && birdY == 0) hit = true;
-    if (pipeGap == 1 && birdY == 1) hit = true;
-    if (hit) {
-      lives--; hitPipe = true;
-      lcdClearBuffered();
-      char crash[17]; snprintf(crash, sizeof(crash), "CRASH! Lives:%u", lives);
-      lcdWriteBuffered(0, 0, crash);
-      delay(800);
-      if (lives == 0) {
-        totalPlayTime[5] += (millis() - gameStart) / 1000; saveTotalPlayTimeToEEPROM(5);
-        if (score > highScores[5]) { highScores[5] = score; saveHighScoreToEEPROM(5); }
-        gamesPlayed[5]++; saveGamesPlayedToEEPROM(5);
-        showScore = true; return;
-      }
-      // reset pipe and bird
-      pipeX = 15; birdY = 0; hitPipe = false; lcdClearBuffered();
-    }
-  }
-
-  // draw
-  lcdClearBuffered();
-  // bird as custom char? fallback to '>'
-  if (birdY < 2) lcdWriteBufferedChar(2, birdY, '>');
-  if (pipeGap == 0) lcdWriteBufferedChar(pipeX, 0, '#'); else lcdWriteBufferedChar(pipeX, 1, '#');
-  char hud[17]; snprintf(hud, sizeof(hud), "Sc:%u Lives:%u Hi:%u", score, lives, highScores[5]);
-  lcdWriteBuffered(0, 0, hud);
-}
-
-// ---------- STOPWATCH (simple) ----------
+// ==================== STOPWATCH ====================
 void stopwatchApp() {
   static bool running = false;
   static unsigned long startTime = 0;
   static unsigned long elapsed = 0;
   static bool initialized = false;
-
-  if (!initialized) { lcdClearBuffered(); initialized = true; }
+  
+  if (!initialized) {
+    lcd.clear();
+    initialized = true;
+  }
+  
   if (buttonAction == 1) {
-    if (!running) { running = true; startTime = millis() - elapsed; }
-    else { running = false; elapsed = millis() - startTime; }
-  }
-  if (buttonAction == 2) {
-    if (elapsed == 0 && !running) { initialized = false; gameState = STATE_MAIN_MENU; drawMainMenu(); return; }
-    else { elapsed = 0; running = false; lcdClearBuffered(); }
-  }
-  if (running) elapsed = millis() - startTime;
-  unsigned long secs = elapsed / 1000; unsigned long mins = secs / 60; secs %= 60; unsigned long ms = (elapsed % 1000) / 10;
-  char buf[17]; snprintf(buf, sizeof(buf), "Stopwatch %02lu:%02lu:%02lu", mins, secs, ms);
-  lcdWriteBuffered(0, 0, "Stopwatch");
-  lcdWriteBuffered(2, 1, buf + 10); // prints time part
-}
-
-// ---------- CALCULATOR (simple) ----------
-void calculatorApp() {
-  static long num1 = 0, num2 = 0; static byte operation = 0; static bool enteringNum2 = false; static bool init = false;
-  if (!init) { num1 = 0; num2 = 0; operation = 0; enteringNum2 = false; init = true; lcdClearBuffered(); }
-  if (buttonAction == 1) {
-    if (!enteringNum2) { num1++; if (num1 > 9999) num1 = -9999; } else { num2++; if (num2 > 9999) num2 = -9999; }
-  }
-  if (buttonAction == 2 && operation == 0 && !enteringNum2) { init = false; gameState = STATE_MAIN_MENU; drawMainMenu(); return; }
-  if (buttonAction == 2 && operation > 0) {
-    if (!enteringNum2) { enteringNum2 = true; num2 = 0; }
-    else {
-      long result = 0;
-      switch (operation) { case 1: result = num1 + num2; break; case 2: result = num1 - num2; break; case 3: result = num1 * num2; break; case 4: result = (num2 != 0) ? num1 / num2 : 0; break; }
-      lcdClearBuffered();
-      char buf[17]; snprintf(buf, sizeof(buf), "Result:%ld", result);
-      lcdWriteBuffered(0, 0, buf);
-      num1 = result; num2 = 0; operation = 0; enteringNum2 = false;
-      unsigned long t0 = millis(); while (millis() - t0 < 800) updateButton();
-      lcdClearBuffered();
+    if (!running) {
+      running = true;
+      startTime = millis() - elapsed;
+    } else {
+      running = false;
+      elapsed = millis() - startTime;
     }
   }
-  // cycle ops on long click pattern
-  if (buttonAction == 1 && !enteringNum2) {
-    // toggle operation quickly if button is kept pressed
-    operation++; if (operation > 4) operation = 1;
-    char ops[] = " +-*/";
-    char buf[17]; snprintf(buf, sizeof(buf), "Op: %c", ops[operation]);
-    lcdWriteBuffered(0, 0, buf);
-    delay(250);
-    lcdClearBuffered();
+  
+  if (buttonAction == 2) {
+    if (elapsed == 0 && !running) {
+      // Back to menu
+      initialized = false;
+      elapsed = 0;
+      running = false;
+      gameState = STATE_MAIN_MENU;
+      lcd.clear();
+      drawMainMenu();
+      return;
+    } else {
+      // Reset
+      elapsed = 0;
+      running = false;
+      lcd.clear();
+      initialized = true;
+    }
   }
-  // display
-  char line2[17];
-  if (!enteringNum2) snprintf(line2, sizeof(line2), "%ld        ", num1);
-  else {
-    char ops[] = " +-*/";
-    snprintf(line2, sizeof(line2), "%ld %c %ld", num1, ops[operation], num2);
+  
+  if (running) {
+    elapsed = millis() - startTime;
   }
-  lcdWriteBuffered(0, 0, "Calc [Hold=Exit]");
-  lcdWriteBuffered(0, 1, line2);
+  
+  unsigned long secs = elapsed / 1000;
+  unsigned long mins = secs / 60;
+  secs = secs % 60;
+  unsigned long ms = (elapsed % 1000) / 10;
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Stopwatch");
+  lcd.setCursor(2, 1);
+  if (mins < 10) lcd.print("0");
+  lcd.print(mins);
+  lcd.print(":");
+  if (secs < 10) lcd.print("0");
+  lcd.print(secs);
+  lcd.print(":");
+  if (ms < 10) lcd.print("0");
+  lcd.print(ms);
+  
+  delay(50);
 }
 
-// ---------- DICE ----------
+// ==================== CALCULATOR ====================
+void calculatorApp() {
+  static long num1 = 0, num2 = 0;
+  static byte operation = 0; // 0=none, 1=+, 2=-, 3=*, 4=/
+  static bool enteringNum2 = false;
+  static bool initialized = false;
+  
+  if (!initialized) {
+    lcd.clear();
+    num1 = 0;
+    num2 = 0;
+    operation = 0;
+    enteringNum2 = false;
+    initialized = true;
+  }
+  
+  if (buttonAction == 2 && operation == 0 && !enteringNum2) {
+    // Exit to menu
+    initialized = false;
+    gameState = STATE_MAIN_MENU;
+    lcd.clear();
+    drawMainMenu();
+    return;
+  }
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Calc [Hold=Exit]");
+  lcd.setCursor(0, 1);
+  if (!enteringNum2) {
+    lcd.print(num1);
+  } else {
+    char ops[] = {' ', '+', '-', '*', '/'};
+    lcd.print(num1);
+    lcd.print(ops[operation]);
+    lcd.print(num2);
+  }
+  lcd.print("        ");
+  
+  if (buttonAction == 1) {
+    if (!enteringNum2) {
+      num1++;
+      if (num1 > 9999) num1 = -9999;
+    } else {
+      num2++;
+      if (num2 > 9999) num2 = -9999;
+    }
+  }
+  
+  if (buttonAction == 2 && operation > 0) {
+    if (!enteringNum2) {
+      enteringNum2 = true;
+      num2 = 0;
+    } else {
+      // Calculate
+      long result = 0;
+      switch(operation) {
+        case 1: result = num1 + num2; break;
+        case 2: result = num1 - num2; break;
+        case 3: result = num1 * num2; break;
+        case 4: result = (num2 != 0) ? num1 / num2 : 0; break;
+      }
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Result:");
+      lcd.setCursor(0, 1);
+      lcd.print(result);
+      delay(2000);
+      num1 = result;
+      num2 = 0;
+      enteringNum2 = false;
+      operation = 0;
+      lcd.clear();
+    }
+  }
+  
+  // Cycle through operations with repeated clicks
+  if (buttonAction == 1 && !enteringNum2 && digitalRead(PIN_BUTTON) == HIGH) {
+    delay(100);
+    if (digitalRead(PIN_BUTTON) == HIGH) {
+      operation++;
+      if (operation > 4) operation = 1;
+      lcd.setCursor(0, 0);
+      char ops[] = {' ', '+', '-', '*', '/'};
+      lcd.print("Op: ");
+      lcd.print(ops[operation]);
+      lcd.print("           ");
+      delay(500);
+    }
+  }
+  
+  delay(100);
+}
+
+// ==================== DICE ROLLER ====================
 void diceApp() {
-  static byte sides = 6; static int res = 0; static bool init = false;
-  if (!init) { sides = 6; res = 0; init = true; lcdClearBuffered(); }
-  char line1[17]; snprintf(line1, sizeof(line1), "Dice: D%u [H=Exit]", sides); lcdWriteBuffered(0, 0, line1);
-  if (buttonAction == 1) { sides += 2; if (sides > 20) sides = 4; res = 0; }
+  static byte sides = 6;
+  static int result = 0;
+  static bool initialized = false;
+  
+  if (!initialized) {
+    lcd.clear();
+    sides = 6;
+    result = 0;
+    initialized = true;
+  }
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Dice: D");
+  lcd.print(sides);
+  lcd.print(" [H=Exit]");
+  
+  if (buttonAction == 1) {
+    sides += 2;
+    if (sides > 20) sides = 4;
+    result = 0;
+  }
+  
   if (buttonAction == 2) {
-    if (res == 0) { init = false; gameState = STATE_MAIN_MENU; drawMainMenu(); return; }
-    else {
-      for (int i = 0; i < 8; ++i) {
-        res = random(1, sides + 1);
-        char buf[17]; snprintf(buf, sizeof(buf), "Rolling: %d    ", res);
-        lcdWriteBuffered(0, 1, buf);
-        unsigned long t0 = millis(); while (millis() - t0 < 80) updateButton();
+    if (result == 0) {
+      // Exit if haven't rolled yet
+      initialized = false;
+      gameState = STATE_MAIN_MENU;
+      lcd.clear();
+      drawMainMenu();
+      return;
+    } else {
+      // Roll
+      for (int i = 0; i < 10; i++) {
+        result = random(1, sides + 1);
+        lcd.setCursor(0, 1);
+        lcd.print("Rolling: ");
+        lcd.print(result);
+        lcd.print("    ");
+        delay(100);
       }
     }
   }
-  if (res > 0) { char buf[17]; snprintf(buf, sizeof(buf), "Result: %d    ", res); lcdWriteBuffered(0, 1, buf); }
-  else lcdWriteBuffered(0, 1, "Hold to roll    ");
+  
+  lcd.setCursor(0, 1);
+  if (result > 0) {
+    lcd.print("Result: ");
+    lcd.print(result);
+    lcd.print("    ");
+  } else {
+    lcd.print("Hold to roll    ");
+  }
+  
+  delay(100);
 }
 
-// ---------- SCREENSAVER ----------
+// ==================== SCREENSAVER ====================
 void screensaver() {
-  static byte x = 0, y = 0; static int dx = 1, dy = 1; static unsigned long lastMove = 0;
-  if (lcdBuf[0][0] == '\xff') lcdInitBuffer(); // init detection
-  if (millis() - lastMove > 150) {
-    lcdClearBuffered();
-    lcdWriteBufferedChar(x, y, ' ');
-    x += dx; y += dy;
+  static byte x = 0, y = 0;
+  static int dx = 1, dy = 1;
+  static unsigned long lastMove = 0;
+  static bool initialized = false;
+  
+  if (!initialized) {
+    lcd.clear();
+    x = random(16);
+    y = random(2);
+    initialized = true;
+  }
+  
+  if (millis() - lastMove > 200) {
+    lcd.setCursor(x, y);
+    lcd.print(" ");
+    
+    x += dx;
+    y += dy;
+    
     if (x >= 15) { x = 15; dx = -1; }
     if (x == 0) dx = 1;
     if (y >= 1) { y = 1; dy = -1; }
     if (y == 0) dy = 1;
-    lcdWriteBufferedChar(x, y, '*');
+    
+    lcd.setCursor(x, y);
+    lcd.print("*");
     lastMove = millis();
   }
+  
   if (buttonAction == 1 || buttonAction == 2) {
-    gameState = STATE_IDLE; lcdClearBuffered();
+    initialized = false;
+    gameState = STATE_IDLE;
+    lcd.clear();
   }
 }
 
-// ---------- STATS APP ----------
+// ==================== STATS ====================
 void statsApp() {
   static byte page = 0;
-  if (buttonAction == 1) { page = (page + 1) % 6; lcdClearBuffered(); }
-  if (buttonAction == 2) { gameState = STATE_MAIN_MENU; drawMainMenu(); return; }
-  char buf[17];
-  snprintf(buf, sizeof(buf), "%s [H=Exit]", gameNames[page]);
-  lcdWriteBuffered(0, 0, buf);
-  char line2[17];
-  snprintf(line2, sizeof(line2), "Hi:%u P:%u T:%us", highScores[page], gamesPlayed[page], totalPlayTime[page]);
-  lcdWriteBuffered(0, 1, line2);
+  static bool initialized = false;
+  
+  if (!initialized) {
+    lcd.clear();
+    page = 0;
+    initialized = true;
+  }
+  
+  if (buttonAction == 1) {
+    page = (page + 1) % 6;
+    lcd.clear();
+  }
+  
+  if (buttonAction == 2) {
+    initialized = false;
+    gameState = STATE_MAIN_MENU;
+    lcd.clear();
+    drawMainMenu();
+    return;
+  }
+  
+  lcd.setCursor(0, 0);
+  lcd.print(gameNames[page]);
+  lcd.print(" [H=Exit] ");
+  
+  lcd.setCursor(0, 1);
+  lcd.print("Hi:");
+  lcd.print(highScores[page]);
+  lcd.print(" P:");
+  lcd.print(gamesPlayed[page]);
+  lcd.print("    ");
+  
+  delay(100);
 }
 
-// ---------- SETTINGS APP ----------
+// ==================== SETTINGS ====================
 void settingsApp() {
-  static byte option = 0; // 0: difficulty select per current game, 1: Reset Stats, 2: Back
+  static byte option = 0;
   static bool initialized = false;
-  if (!initialized) { option = 0; initialized = true; lcdClearBuffered(); }
-
+  
+  if (!initialized) {
+    lcd.clear();
+    option = 0;
+    initialized = true;
+  }
+  
   if (buttonAction == 1) {
     if (option == 0) {
-      // cycle difficulty for currently selected gamesMenuSelection (or mainMenuSelection - choose gamesMenuSelection)
-      // We'll use gamesMenuSelection as last selected in Games menu; default to 0
-      byte g = gamesMenuSelection;
-      difficultyPerGame[g] = (difficultyPerGame[g] + 1) % 3;
-      saveDifficultyToEEPROM(g);
-    } else if (option == 1) {
-      // Reset stats
-      for (byte i = 0; i < 6; ++i) {
-        highScores[i] = 0; gamesPlayed[i] = 0; totalPlayTime[i] = 0; difficultyPerGame[i] = 1;
-        saveHighScoreToEEPROM(i); saveGamesPlayedToEEPROM(i); saveTotalPlayTimeToEEPROM(i); saveDifficultyToEEPROM(i);
+      difficulty = (difficulty + 1) % 3;
+      EEPROM.write(10, difficulty);
+    } else     if (option == 1) {
+      // Reset high scores
+      for (int i = 0; i < 6; i++) {
+        highScores[i] = 0;
+        gamesPlayed[i] = 0;
+        EEPROM.write(i * 2, 0);
+        EEPROM.write(i * 2 + 1, 0);
       }
-      lcdClearBuffered(); lcdWriteBuffered(0, 0, "Scores reset! "); unsigned long t0 = millis(); while (millis()-t0<800) updateButton(); lcdClearBuffered();
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Scores reset!");
+      delay(1000);
+      lcd.clear();
     }
   }
-
+  
   if (buttonAction == 2) {
     option = (option + 1) % 3;
-    if (option == 2) { initialized = false; gameState = STATE_MAIN_MENU; drawMainMenu(); return; }
-    lcdClearBuffered();
-  }
-
-  if (option == 0) {
-    char buf[17]; snprintf(buf, sizeof(buf), ">Difficulty g:%u", gamesMenuSelection);
-    lcdWriteBuffered(0, 0, buf);
-    const char* names[] = {"Easy", "Normal", "Hard"};
-    char line2[17]; snprintf(line2, sizeof(line2), "%s             ", names[difficultyPerGame[gamesMenuSelection]]);
-    lcdWriteBuffered(0, 1, line2);
-  } else if (option == 1) {
-    lcdWriteBuffered(0, 0, ">Reset Stats    ");
-    lcdWriteBuffered(0, 1, "Click to reset  ");
-  }
-}
-
-// ---------- UTIL: helper to set boot defaults ----------
-void initDefaultsIfFirstRun() {
-  // We'll detect if EEPROM has some valid marker; simple approach: if all zeros, write defaults
-  bool allZero = true;
-  for (int i = 0; i < 6; ++i) if (EEPROM.read(EEPROM_ADDR_GAMESPLAYED + i) != 0) allZero = false;
-  if (allZero) {
-    for (int i = 0; i < 6; ++i) {
-      highScores[i] = 0; gamesPlayed[i] = 0; totalPlayTime[i] = 0; difficultyPerGame[i] = 1;
+    if (option == 2) {
+      initialized = false;
+      gameState = STATE_MAIN_MENU;
+      lcd.clear();
+      drawMainMenu();
+      return;
     }
-    saveAllStats();
+    lcd.clear();
+  }
+  
+  lcd.setCursor(0, 0);
+  if (option == 0) {
+    lcd.print(">Difficulty     ");
+    lcd.setCursor(0, 1);
+    if (difficulty == 0) lcd.print("Easy            ");
+    else if (difficulty == 1) lcd.print("Normal          ");
+    else lcd.print("Hard            ");
+  } else if (option == 1) {
+    lcd.print(">Reset Stats    ");
+    lcd.setCursor(0, 1);
+    lcd.print("Click to reset  ");
+  }
+  
+  delay(100);
+}
+
+// ==================== PONG ====================
+void pongGame() {
+  static byte ballX = 8, ballY = 0;
+  static int ballDX = 1, ballDY = 1;
+  static byte paddleY = 0;
+  static byte cpuPaddleY = 1;
+  static unsigned int score = 0;
+  static unsigned int cpuScore = 0;
+  static bool playing = false;
+  static bool showTitle = true;
+  static bool titleBlink = false;
+  static unsigned long lastTitleBlink = 0;
+  static unsigned long lastMove = 0;
+  static unsigned long lastPaddleMove = 0;
+  static bool showScore = false;
+  static unsigned long gameStartTime = 0;
+  
+  if (showScore) {
+    gameIsActive = false;
+    lcd.setCursor(0, 0);
+    if (score > cpuScore) {
+      lcd.print("YOU WIN! ");
+      lcd.print(score);
+      lcd.print("-");
+      lcd.print(cpuScore);
+    } else {
+      lcd.print("YOU LOSE! ");
+      lcd.print(score);
+      lcd.print("-");
+      lcd.print(cpuScore);
+    }
+    lcd.setCursor(0, 1);
+    lcd.print("Best:");
+    lcd.print(highScores[3]);
+    lcd.print("         ");
+    if (buttonAction == 1 || buttonAction == 2) {
+      gamesPlayed[3]++;
+      showScore = false;
+      showTitle = true;
+      playing = false;
+      score = 0;
+      cpuScore = 0;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  if (showTitle) {
+    gameIsActive = false;
+    if (millis() - lastTitleBlink > 500) {
+      titleBlink = !titleBlink;
+      lastTitleBlink = millis();
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "PONG - First 5  " : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "Click to start  " : "Hold for menu   ");
+    }
+    if (buttonAction == 1) {
+      ballX = 8; ballY = random(2);
+      ballDX = random(2) == 0 ? -1 : 1;
+      ballDY = random(2) == 0 ? -1 : 1;
+      paddleY = 0;
+      cpuPaddleY = 1;
+      score = 0;
+      cpuScore = 0;
+      playing = true;
+      gameIsActive = true;
+      showTitle = false;
+      gameStartTime = millis();
+      lcd.clear();
+    }
+    if (buttonAction == 2) {
+      showTitle = true;
+      gameState = STATE_IDLE;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  // Paddle control
+  if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause && millis() - lastPaddleMove > 200) {
+    paddleY = (paddleY == 0) ? 1 : 0;
+    lastPaddleMove = millis();
+  }
+  
+  if (millis() - lastMove < 180) return;
+  lastMove = millis();
+  
+  // Simple AI for CPU paddle
+  if (ballX > 8 && ballDX > 0) {
+    if (cpuPaddleY != ballY && random(10) < 7) {
+      cpuPaddleY = ballY;
+    }
+  }
+  
+  // Move ball
+  ballX += ballDX;
+  ballY += ballDY;
+  
+  // Bounce off top/bottom
+  if (ballY >= 1) { ballY = 1; ballDY = -1; }
+  if (ballY <= 0) { ballY = 0; ballDY = 1; }
+  
+  // Check player paddle hit (left side x=0,1)
+  if (ballX == 1 && ballY == paddleY && ballDX < 0) {
+    ballX = 2;
+    ballDX = 1;
+    ballDY = random(2) == 0 ? -1 : 1; // Random angle
+  }
+  
+  // Check CPU paddle hit (right side x=14,15)
+  if (ballX == 14 && ballY == cpuPaddleY && ballDX > 0) {
+    ballX = 13;
+    ballDX = -1;
+    ballDY = random(2) == 0 ? -1 : 1;
+  }
+  
+  // Player miss - CPU scores
+  if (ballX <= 0 && ballDX < 0) {
+    cpuScore++;
+    if (cpuScore >= 5) {
+      totalPlayTime[3] += (millis() - gameStartTime) / 1000;
+      saveHighScore(3, score);
+      playing = false;
+      showScore = true;
+      return;
+    }
+    ballX = 8; ballY = random(2);
+    ballDX = 1; ballDY = random(2) == 0 ? -1 : 1;
+    delay(500);
+  }
+  
+  // CPU miss - Player scores
+  if (ballX >= 15 && ballDX > 0) {
+    score++;
+    if (score >= 5) {
+      totalPlayTime[3] += (millis() - gameStartTime) / 1000;
+      saveHighScore(3, score);
+      playing = false;
+      showScore = true;
+      return;
+    }
+    ballX = 8; ballY = random(2);
+    ballDX = -1; ballDY = random(2) == 0 ? -1 : 1;
+    delay(500);
+  }
+  
+  // Draw
+  lcd.clear();
+  // Player paddle
+  lcd.setCursor(0, paddleY);
+  lcd.print("|");
+  // CPU paddle
+  lcd.setCursor(15, cpuPaddleY);
+  lcd.print("|");
+  // Ball
+  if (ballX >= 0 && ballX < 16 && ballY >= 0 && ballY < 2) {
+    lcd.setCursor(ballX, ballY);
+    lcd.print("o");
+  }
+  // Score display
+  lcd.setCursor(6, 0);
+  lcd.print(score);
+  lcd.print("-");
+  lcd.print(cpuScore);
+}
+
+// ==================== MEMORY GAME ====================
+void memoryGame() {
+  static byte sequence[20];
+  static byte seqLen = 0;
+  static byte playerPos = 0;
+  static byte phase = 0; // 0=title, 1=show, 2=input, 3=score
+  static unsigned int score = 0;
+  static bool titleBlink = false;
+  static unsigned long lastTitleBlink = 0;
+  static unsigned long lastBlink = 0;
+  static byte showPos = 0;
+  static unsigned long gameStartTime = 0;
+  static bool waitingInput = true;
+  
+  if (phase == 3) {
+    gameIsActive = false;
+    lcd.setCursor(0, 0);
+    lcd.print("Level:");
+    lcd.print(score);
+    lcd.print("        ");
+    lcd.setCursor(0, 1);
+    lcd.print("Best:");
+    lcd.print(highScores[4]);
+    lcd.print("         ");
+    if (buttonAction == 1 || buttonAction == 2) {
+      gamesPlayed[4]++;
+      phase = 0;
+      seqLen = 0;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  if (phase == 0) {
+    gameIsActive = false;
+    if (millis() - lastTitleBlink > 500) {
+      titleBlink = !titleBlink;
+      lastTitleBlink = millis();
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "Memory Game     " : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "Click to start  " : "Hold for menu   ");
+    }
+    if (buttonAction == 1) {
+      seqLen = 0;
+      playerPos = 0;
+      score = 0;
+      phase = 1;
+      showPos = 0;
+      gameIsActive = true;
+      gameStartTime = millis();
+      lcd.clear();
+    }
+    if (buttonAction == 2) {
+      gameState = STATE_IDLE;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  if (phase == 1) {
+    // Add new item to sequence
+    if (showPos == 0 && (seqLen == 0 || playerPos >= seqLen)) {
+      sequence[seqLen] = random(2);
+      seqLen++;
+    }
+    
+    // Show sequence
+    if (showPos < seqLen) {
+      if (millis() - lastBlink > 600) {
+        lcd.clear();
+        lcd.setCursor(7, sequence[showPos]);
+        lcd.print("**");
+        delay(400);
+        lcd.clear();
+        showPos++;
+        lastBlink = millis();
+      }
+    } else {
+      phase = 2;
+      playerPos = 0;
+      waitingInput = true;
+      lcd.clear();
+      lcd.print("Your turn!");
+      delay(800);
+      lcd.clear();
+    }
+    return;
+  }
+  
+  if (phase == 2) {
+    lcd.setCursor(0, 0);
+    lcd.print("Top or Bottom?");
+    lcd.setCursor(0, 1);
+    lcd.print("Done:");
+    lcd.print(playerPos);
+    lcd.print("/");
+    lcd.print(seqLen);
+    lcd.print("  ");
+    
+    if (buttonAction == 1 && waitingInput) {
+      waitingInput = false;
+      byte input = 0; // Top row
+      
+      if (input == sequence[playerPos]) {
+        playerPos++;
+        lcd.clear();
+        lcd.print("Correct!");
+        delay(400);
+        if (playerPos >= seqLen) {
+          score++;
+          phase = 1;
+          showPos = 0;
+          lcd.clear();
+          lcd.print("Level ");
+          lcd.print(score + 1);
+          lcd.print("!");
+          delay(1000);
+          lcd.clear();
+        } else {
+          waitingInput = true;
+        }
+      } else {
+        totalPlayTime[4] += (millis() - gameStartTime) / 1000;
+        saveHighScore(4, score);
+        phase = 3;
+        lcd.clear();
+        lcd.print("Wrong!");
+        delay(1500);
+      }
+    } else if (buttonAction == 2 && waitingInput) {
+      waitingInput = false;
+      byte input = 1; // Bottom row
+      
+      if (input == sequence[playerPos]) {
+        playerPos++;
+        lcd.clear();
+        lcd.print("Correct!");
+        delay(400);
+        if (playerPos >= seqLen) {
+          score++;
+          phase = 1;
+          showPos = 0;
+          lcd.clear();
+          lcd.print("Level ");
+          lcd.print(score + 1);
+          lcd.print("!");
+          delay(1000);
+          lcd.clear();
+        } else {
+          waitingInput = true;
+        }
+      } else {
+        totalPlayTime[4] += (millis() - gameStartTime) / 1000;
+        saveHighScore(4, score);
+        phase = 3;
+        lcd.clear();
+        lcd.print("Wrong!");
+        delay(1500);
+      }
+    }
+    
+    if (!waitingInput && buttonAction == 0) {
+      waitingInput = true;
+    }
   }
 }
 
-// ---------- setup() and loop() ----------
+// ==================== FLAPPY BIRD ====================
+void flappyGame() {
+  static byte birdY = 0;
+  static byte pipeX = 15;
+  static byte pipeGap = 0; // 0=top clear, 1=bottom clear
+  static unsigned int score = 0;
+  static byte lives = 3;
+  static bool playing = false;
+  static bool showTitle = true;
+  static bool titleBlink = false;
+  static unsigned long lastTitleBlink = 0;
+  static unsigned long lastMove = 0;
+  static unsigned long lastFlap = 0;
+  static bool showScore = false;
+  static unsigned long gameStartTime = 0;
+  static bool hitPipe = false;
+  
+  if (showScore) {
+    gameIsActive = false;
+    lcd.setCursor(0, 0);
+    lcd.print("Score:");
+    lcd.print(score);
+    lcd.print("        ");
+    lcd.setCursor(0, 1);
+    lcd.print("Best:");
+    lcd.print(highScores[5]);
+    lcd.print("         ");
+    if (buttonAction == 1 || buttonAction == 2) {
+      gamesPlayed[5]++;
+      showScore = false;
+      showTitle = true;
+      playing = false;
+      lives = 3;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  if (showTitle) {
+    gameIsActive = false;
+    if (millis() - lastTitleBlink > 500) {
+      titleBlink = !titleBlink;
+      lastTitleBlink = millis();
+      lcd.setCursor(0, 0);
+      lcd.print(titleBlink ? "Flappy - 3 Lives" : "                ");
+      lcd.setCursor(0, 1);
+      lcd.print(titleBlink ? "Click=Flap UP   " : "Hold for menu   ");
+    }
+    if (buttonAction == 1) {
+      birdY = 0;
+      pipeX = 15;
+      pipeGap = random(2);
+      score = 0;
+      lives = 3;
+      playing = true;
+      gameIsActive = true;
+      showTitle = false;
+      gameStartTime = millis();
+      hitPipe = false;
+      lcd.clear();
+    }
+    if (buttonAction == 2) {
+      showTitle = true;
+      gameState = STATE_IDLE;
+      lcd.clear();
+    }
+    return;
+  }
+  
+  // Flap
+  if (digitalRead(PIN_BUTTON) == LOW && !holdingForPause && millis() - lastFlap > 250) {
+    birdY = 0;
+    lastFlap = millis();
+  }
+  
+  if (millis() - lastMove < 300) return;
+  lastMove = millis();
+  
+  // Gravity
+  if (birdY == 0 && millis() - lastFlap > 400) {
+    birdY = 1;
+  }
+  
+  // Move pipe
+  if (!hitPipe) {
+    if (pipeX > 0) {
+      pipeX--;
+    } else {
+      pipeX = 15;
+      pipeGap = random(2);
+      if (!hitPipe) score++;
+    }
+  }
+  
+  // Collision
+  if (pipeX == 1 && !hitPipe) {
+    if ((pipeGap == 1 && birdY == 0) || (pipeGap == 0 && birdY == 1)) {
+      lives--;
+      hitPipe = true;
+      lcd.clear();
+      lcd.setCursor(4, 0);
+      lcd.print("CRASH!");
+      lcd.setCursor(2, 1);
+      lcd.print("Lives:");
+      lcd.print(lives);
+      delay(1000);
+      if (lives == 0) {
+        totalPlayTime[5] += (millis() - gameStartTime) / 1000;
+        saveHighScore(5, score);
+        playing = false;
+        showScore = true;
+        return;
+      }
+      pipeX = 15;
+      birdY = 0;
+      hitPipe = false;
+    }
+  }
+  
+  // Draw
+  lcd.clear();
+  
+  // Bird
+  lcd.setCursor(1, birdY);
+  lcd.print(">");
+  
+  // Pipe
+  if (pipeGap == 1) {
+    lcd.setCursor(pipeX, 0);
+    lcd.print("#");
+  } else {
+    lcd.setCursor(pipeX, 1);
+    lcd.print("#");
+  }
+  
+  // HUD
+  lcd.setCursor(11, 0);
+  lcd.print(score);
+  lcd.setCursor(11, 1);
+  for (byte i = 0; i < lives; i++) {
+    lcd.print((char)3); // Heart from custom char
+  }
+}
+
 void setup() {
   pinMode(PIN_BUTTON, INPUT_PULLUP);
-  if (BUZZER_PIN != 255) pinMode(BUZZER_PIN, OUTPUT);
   lcd.init();
   lcd.backlight();
-  lcdInitBuffer();
-  randomSeed(analogRead(A3));
-  loadStatsFromEEPROM();
-  initDefaultsIfFirstRun();
-  lcdClearBuffered();
-  slotMachineBoot();
-  gameState = STATE_IDLE;
+  loadHighScores();
+  randomSeed(analogRead(0));
 }
 
 void loop() {
-  // update button first
   updateButton();
-
-  // handle states
   switch (gameState) {
     case STATE_BOOT: slotMachineBoot(); break;
-    case STATE_IDLE: drawIdle(); break;
+    case STATE_IDLE: updateIdle(); break;
     case STATE_MAIN_MENU: updateMainMenu(); break;
-    case STATE_RUNNER:
-      gameIsActive = true;
-      runnerGame();
-      // after returning (game over), go to games menu
-      gameState = STATE_GAMES_MENU;
-      break;
-    case STATE_SNAKE:
-      gameIsActive = true;
-      snakeGame();
-      gameState = STATE_GAMES_MENU;
-      break;
-    case STATE_REACTION:
-      gameIsActive = true;
-      reactionGame();
-      gameState = STATE_GAMES_MENU;
-      break;
-    case STATE_PONG:
-      gameIsActive = true;
-      pongGame();
-      gameState = STATE_GAMES_MENU;
-      break;
-    case STATE_MEMORY:
-      gameIsActive = true;
-      memoryGame();
-      gameState = STATE_GAMES_MENU;
-      break;
-    case STATE_FLAPPY:
-      gameIsActive = true;
-      flappyGame();
-      gameState = STATE_GAMES_MENU;
-      break;
+    case STATE_GAMES_MENU: updateGamesMenu(); break;
+    case STATE_RUNNER: runnerGame(); break;
+    case STATE_SNAKE: snakeGame(); break;
+    case STATE_REACTION: reactionGame(); break;
+    case STATE_PONG: pongGame(); break;
+    case STATE_MEMORY: memoryGame(); break;
+    case STATE_FLAPPY: flappyGame(); break;
     case STATE_SETTINGS: settingsApp(); break;
     case STATE_STOPWATCH: stopwatchApp(); break;
     case STATE_CALCULATOR: calculatorApp(); break;
@@ -1444,11 +1794,5 @@ void loop() {
     case STATE_SCREENSAVER: screensaver(); break;
     case STATE_STATS: statsApp(); break;
     case STATE_PAUSED: updatePause(); break;
-    case STATE_GAMES_MENU: updateGamesMenu(); break;
-    default: gameState = STATE_IDLE; break;
   }
-
-  // small idle CPU friendly sleep until next frame
-  // but we must remain responsive to the button - loop cycles fast enough
-  // rely on frame limiter in games where needed
 }
