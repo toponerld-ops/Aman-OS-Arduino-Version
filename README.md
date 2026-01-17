@@ -3,7 +3,7 @@
 ![Arduino](https://img.shields.io/badge/Arduino-00979D?style=for-the-badge&logo=Arduino&logoColor=white)
 ![C++](https://img.shields.io/badge/C%2B%2B-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)
-![Version](https://img.shields.io/badge/Version-1.0-brightgreen?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-1.9-brightgreen?style=for-the-badge)
 ![Build](https://img.shields.io/badge/Build-Passing-success?style=for-the-badge)
 ![Games](https://img.shields.io/badge/Games-6-blue?style=for-the-badge)
 ![Apps](https://img.shields.io/badge/Apps-5-orange?style=for-the-badge)
