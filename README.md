@@ -7,7 +7,7 @@
 ![Build](https://img.shields.io/badge/Build-Passing-success?style=for-the-badge)
 ![Games](https://img.shields.io/badge/Games-6-blue?style=for-the-badge)
 ![Apps](https://img.shields.io/badge/Apps-5-orange?style=for-the-badge)
-![Development](https://img.shields.io/badge/Dev_Time-77.4hrs-red?style=for-the-badge)# AMAN-OS 🎮
+![Development](https://img.shields.io/badge/Dev_Time-77.4hrs-red?style=for-the-badge) # AMAN-OS 🎮
 A full-featured operating system for Arduino Nano (ATmega328P) with 6 games, multiple apps, wireless weather monitoring, and persistent storage - all controlled with a single button on a 16x2 I2C LCD display.
 
 ## 📺 Demo Videos
