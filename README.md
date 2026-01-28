@@ -93,6 +93,14 @@ Built a state machine with 18 states. Optimized LCD updates (only redraws change
 Weather station talks over Bluetooth - master/slave setup with binary data protocol.
 Took forever to debug the timing and button debouncing but it works now.
 
+## Setup
+1. Install Arduino IDE
+2. Install libraries via Library Manager
+3. Connect hardware (see wiring diagram)
+4. Upload sketch_nov22b.ino to Nano
+5. Upload weather_station_slave.ino to Uno (optional)
+6. Pair HC-05 modules if using weather station
+
 Known issues
 Yeah there's bugs. Some games need balancing. Weather station pairing is manual. I'll fix it eventually.
 Future plans
