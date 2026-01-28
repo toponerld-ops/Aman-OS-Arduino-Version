@@ -1,0 +1,11 @@
+## Wiring
+
+| Arduino Pin | Connects To |
+|-------------|-------------|
+| A4 (SDA)    | LCD SDA     |
+| A5 (SCL)    | LCD SCL     |
+| D2          | Button      |
+| D10         | HC-05 RX    |
+| D11         | HC-05 TX    |
+| 5V          | LCD VCC, HC-05 VCC |
+| GND         | LCD GND, Button, HC-05 GND |
