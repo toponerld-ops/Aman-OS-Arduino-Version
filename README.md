@@ -95,8 +95,14 @@ Took forever to debug the timing and button debouncing but it works now.
 
 ## Images
 
+![Assembly CAD](images/assembly-cad.png)
 
-![App Screenshot](images/your-image.png)
+![Handheld Version](images/handheld_version.png)
+
+![Hardware with Weather OS](images/hardware_img_with_weather_os.png)
+
+![Wiring Diagram](images/wiring_diag.png)
+
 
 ## Setup
 1. Install Arduino IDE
