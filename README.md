@@ -7,7 +7,6 @@ My custom operating system for Arduino Nano - 6 games, apps, wireless weather st
 ![Build](https://img.shields.io/badge/Build-Passing-success?style=for-the-badge)
 ![Games](https://img.shields.io/badge/Games-6-blue?style=for-the-badge)
 ![Apps](https://img.shields.io/badge/Apps-5-orange?style=for-the-badge)
-![Development](https://img.shields.io/badge/Dev_Time-77.4hrs-red?style=for-the-badge) -
 
 📺 Videos
 Full Demo: https://youtu.be/J0eP7VAG8SE
