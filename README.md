@@ -103,7 +103,7 @@ Took forever to debug the timing and button debouncing but it works now.
 
 ![Wiring Diagram](images/wiring_diag.png)
 
-![wiring_Diagram_visual](./images)
+![wiring_Diagram_visual](images/Wiring_visual.jpg)
 
 ## BOM
 
