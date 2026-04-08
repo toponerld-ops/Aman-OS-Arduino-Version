@@ -13,7 +13,7 @@ Full Demo: https://youtu.be/J0eP7VAG8SE
 Weather Station: https://youtu.be/XZgUcti3Fz8
 
 What is this?
-So I wanted to see how much I could squeeze out of an Arduino Nano. Turns out - a LOT. Built an entire OS with games, apps, weather monitoring, and it all runs with a single button on a tiny LCD screen.
+So I wanted to see how much I could squeeze out of an Arduino Nano. Turns out a LOT. Built an entire OS with games, apps, weather monitoring, and it all runs with a single button on a tiny LCD screen.
 Spent 77 hours on this over 12 days. Worth it.
 What it does
 Games:
@@ -89,7 +89,7 @@ Navigate menus, play games, all with one button. It's actually pretty fun once y
 
 Technical stuff
 Built a state machine with 18 states. Optimized LCD updates (only redraws changed chars). Stores everything in EEPROM. Runs at 40 FPS.
-Weather station talks over Bluetooth - master/slave setup with binary data protocol.
+Weather station talks over Bluetooth master/slave setup with binary data protocol.
 Took forever to debug the timing and button debouncing but it works now.
 
 ## Images
@@ -139,5 +139,5 @@ Want to help?
 Fork it, fix bugs, add games, whatever. I'd love to see what you build!
 
 Made by Aman
-77 hours, 2500+ lines of code, way too much coffee
+81 hours, 2500+ lines of code, way too much coffee
 Built for Hack Club 🚢
